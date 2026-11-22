@@ -15,7 +15,7 @@ app/src/main/java/dev/kugou/kugouhook/
 └── hooks/
     ├── AdHooks.kt          推荐流广告：CopyOnWriteArrayList.add(E) 过滤
     ├── MineBannerHooks.kt  「我的」页动态 banner：delegate 返回 null
-    └── SplashAdHooks.kt    开屏运营广告：不发请求，直接回 onNoAd
+    └── SplashAdHooks.kt    开屏运营广告：素材成功回调改走 onNoAD
 ```
 
 分层很简单：`KugouModule` 负责**什么时候**装，`hooks/*` 负责**装什么**，
@@ -122,13 +122,11 @@ app/src/main/java/dev/kugou/kugouhook/
 
 ### SplashAdHooks
 
-hook `TMEOperSplashAdListener.onADFetch` / `onADFetchWithResult`：不 proceed，
-主动回调 `onNoAD(AdError)`，code 204。
+`TMEOperSplashAdListener` 声明的是抽象方法，LSPosed 不能直接 hook。酷狗 20.6.4 的具体分发类是 `ce.f`，它把两个素材成功回调及 `onNoAD` 分发给同一批监听器。
 
-不 proceed 意味着**广告请求根本不会发出去**，比"拿到广告后不展示"更彻底，
-也避免了请求回来的广告对象在别处被二次使用。
+模块按精确参数类型拦截具体类的 `onADFetch` 和 `onADFetchWithResult`。安装前确认 `onNoAD(AdError)` 与 `AdError(int, String)` 都存在。运行时回调 `onNoAD(AdError(204, "no ad"))`，只有回调正常返回才跳过原成功回调；替代回调失败则放行原逻辑，避免静默卡在启动等待。
 
-注意这里必须主动触发 `onNoAD` 而不是简单返回：宿主在等这个回调，不回调会卡在等待状态。
+拦截发生在素材成功回调阶段，**不保证广告网络请求未发出**。
 
 ## ApkVersion：为什么手写 AXML 解析
 

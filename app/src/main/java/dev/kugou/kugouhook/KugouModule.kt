@@ -9,6 +9,7 @@ import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import dev.kugou.kugouhook.hooks.AdHooks
 import dev.kugou.kugouhook.hooks.MineBannerHooks
 import dev.kugou.kugouhook.hooks.SplashAdHooks
+import dev.kugou.kugouhook.hooks.VipPromptHooks
 import java.io.File
 
 /**
@@ -113,6 +114,12 @@ class KugouModule : XposedModule() {
             .onFailure { log.error("MineBannerHooks failed", it) }
         runCatching { SplashAdHooks(resolver, hm, log).install() }
             .onFailure { log.error("SplashAdHooks failed", it) }
+        if (versionCode == AUDITED_VERSION_CODE) {
+            runCatching { VipPromptHooks(resolver, hm, log).install() }
+                .onFailure { log.error("VipPromptHooks failed", it) }
+        } else {
+            log.info("skip VIP prompt UI hooks: unsupported host version $versionCode")
+        }
 
         log.info("install summary: ${hm.summary()}")
     }
