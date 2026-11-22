@@ -76,8 +76,18 @@ adb shell su -c 'touch /data/data/com.kugou.android/cache/kugouhook.audit'
 ```
 
 推送到 `main` 且改动涉及 `app/`、构建脚本或 workflow 时，CI 会自动构建 release APK 并发布到
-本仓库的 Releases（tag 为 `v<versionName>`，版本号从 `module.prop` 读）。同版本已发布则跳过，
-需要覆盖就手动触发 workflow 并勾选 `force`。
+本仓库的 Releases（tag 为 `v<versionName>`，版本号从 `module.prop` 读）。
+
+**默认发预发布（prerelease），不是正式版。** 自动构建只证明"能编出来、入口类没被 R8 吃掉"，
+不证明在本机装上去真的有效；把没上机验证过的包标成正式版，等于对外宣布它稳定。而 prerelease
+不会被 GitHub 当作 latest，所以"最新正式版"始终指向你亲自确认过的那一版。
+
+| 场景 | 操作 | 结果 |
+|---|---|---|
+| 日常推送 | 直接 push `main` | 自动构建，发 **预发布** |
+| 同一版本重建 | 手动触发，勾 `force` | 覆盖该版本的预发布 |
+| 验证通过转正式 | 手动触发，勾 `force` + `stable` | 覆盖并转成正式版，标记 latest |
+| 版本号没变想跳过 | —— | 自动跳过（同版本已存在） |
 
 ### 发布前必须做的两件事
 

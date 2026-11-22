@@ -27,6 +27,22 @@ on:
         required: false
         type: boolean
         default: false
+      stable:
+        description: '发为正式版（默认发预发布）'
+        required: false
+        type: boolean
+        default: false
+
+# 发布策略：**默认预发布**。
+#
+# 自动构建出来的包一律标 prerelease —— 它只证明"能编出来、入口类没被 R8 吃掉"，
+# 不证明在本机装上去真的有效。把没上机验证过的包标成正式版，等于对外宣布它是稳定的，
+# 而模块一旦静默失效，用户只会觉得"这模块坏了"，不会想到去看版本号。
+#
+# 什么时候可以发正式版：真机验证通过之后，手动触发本 workflow 并勾上
+# force + stable（force 才能覆盖已存在的预发布）。
+#
+# 另外 prerelease 不会被 GitHub 当作 latest，所以"最新正式版"始终指向你确认过的那一版。
 
 permissions:
   contents: write
@@ -90,7 +106,7 @@ jobs:
             exit 0
           fi
           if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "$tag 已存在，跳过构建（要覆盖请手动触发并勾选 force）"
+            echo "$tag 已存在，跳过构建（要覆盖/转正式版：手动触发并勾选 force，转正式版再加勾 stable）"
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
             echo "should_build=true" >> "$GITHUB_OUTPUT"
@@ -216,16 +232,28 @@ jobs:
           name: KugouHook-${{ needs.guard.outputs.version_name }}
           path: app/build/outputs/apk/release/app-release.apk
 
-      - name: 发布 Release
+      - name: 发布 Release（默认预发布）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="${{ needs.guard.outputs.tag }}"
-          # 走到这里说明 guard 判定过 tag 不存在（或用户强制覆盖），直接创建。
-          gh release create "$tag" \
-            app/build/outputs/apk/release/app-release.apk \
-            --repo "${{ github.repository }}" \
-            --title "KugouHook ${tag}" \
-            --notes-file RELEASE_NOTES.md \
-            --latest
+          stable="${{ github.event.inputs.stable || 'false' }}"
+          # --prerelease 与 --latest 互斥：预发布不应被当成最新正式版。
+          if [ "$stable" = "true" ]; then
+            echo "发布正式版 $tag"
+            gh release create "$tag" \
+              app/build/outputs/apk/release/app-release.apk \
+              --repo "${{ github.repository }}" \
+              --title "KugouHook ${tag}" \
+              --notes-file RELEASE_NOTES.md \
+              --latest
+          else
+            echo "发布预发布 $tag"
+            gh release create "$tag" \
+              app/build/outputs/apk/release/app-release.apk \
+              --repo "${{ github.repository }}" \
+              --title "KugouHook ${tag} (预发布)" \
+              --notes-file RELEASE_NOTES.md \
+              --prerelease
+          fi
