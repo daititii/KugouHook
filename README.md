@@ -66,6 +66,52 @@ adb shell su -c 'cat /data/data/com.kugou.android/cache/kugouhook.log'
 adb shell su -c 'touch /data/data/com.kugou.android/cache/kugouhook.audit'
 ```
 
+## 构建与发布
+
+本地构建（需 JDK 17+、Android SDK 35）：
+
+```bash
+./gradlew :app:assembleDebug      # 不混淆，装机调试用
+./gradlew :app:assembleRelease    # R8 混淆 + 资源收缩，发布用
+```
+
+推送到 `main` 且改动涉及 `app/`、构建脚本或 workflow 时，CI 会自动构建 release APK 并发布到
+本仓库的 Releases（tag 为 `v<versionName>`，版本号从 `module.prop` 读）。同版本已发布则跳过，
+需要覆盖就手动触发 workflow 并勾选 `force`。
+
+### 发布前必须做的两件事
+
+**1. 配置 `KEYSTORE_BASE64` secret（强烈建议）**
+
+未配置时 CI 会用 runner 现生成的 debug keystore 签名。Android 在更新已安装包时会校验签名，
+签名一变，设备上就必须**先卸载旧模块再装新的**——用户看到的是"更新后模块失效"。
+
+配置方法：本地生成一个长期 keystore，base64 后填进仓库 secret。
+
+```bash
+keytool -genkeypair -v -keystore kugouhook.jks -alias kugouhook \
+        -keyalg RSA -keysize 2048 -validity 10000
+base64 -w0 kugouhook.jks     # 结果填 KEYSTORE_BASE64
+```
+
+另外三个 secret 可选：`KEYSTORE_PASSWORD`、`KEYSTORE_ALIAS`、`KEYSTORE_KEY_PASSWORD`。
+
+**2. 两处版本号必须一起改**
+
+| 位置 | 谁读它 |
+|---|---|
+| `app/src/main/resources/META-INF/xposed/module.prop` | LSPosed（模块中心显示的版本） |
+| `app/build.gradle.kts` 的 `versionCode` / `versionName` | Android 系统（决定这是不是一个新包） |
+
+只改一处是最容易犯又最难发现的错：只改前者，用户看不到更新；只改后者，系统认为装的还是旧包。
+CI 的第一步就会比对这两处，不一致直接失败。
+
+### CI 里为什么专门检查 dex
+
+`proguard-rules.pro` 写错时，Debug 构建**完全正常**（不走 R8），只有装到手机上才会发现模块
+静默不生效——因为 framework 是按 `java_init.list` 里的类名字符串去找入口类的，被 R8 改名就找不到。
+所以 workflow 会在构建后直接检查该字符串是否真的存在于 `classes.dex` 中，把这类问题挡在发布之前。
+
 ## 仍未处理的广告位
 
 | 位置 | 类 | 说明 |

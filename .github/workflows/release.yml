@@ -1,0 +1,231 @@
+name: Release
+
+# 什么时候构建：
+#   - push 到 main，且改动落在会影响 APK 的路径（纯文档改动不构建）
+#   - 手动触发（force=true 时即使版本号没变也重新构建并覆盖发布）
+#
+# 什么时候发布：版本号（module.prop 的 versionCode）没有对应的 Release 时自动发布；
+# 已存在就跳过，避免同样的版本被反复覆盖 —— 覆盖会让已经装了该版本的用户
+# 收不到"有更新"的信号，也会让 Release 的下载数失去意义。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '版本号未变化也强制重建并覆盖发布'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# 发布是串行的：两个构建同时抢同一个 tag 会互相删 Release。
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: 版本与一致性检查
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.ver.outputs.should_build }}
+      tag: ${{ steps.ver.outputs.tag }}
+      version_name: ${{ steps.ver.outputs.version_name }}
+      version_code: ${{ steps.ver.outputs.version_code }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 读取版本号并校验与 build.gradle.kts 一致
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          prop=app/src/main/resources/META-INF/xposed/module.prop
+          gradle_file=app/build.gradle.kts
+
+          prop_code=$(grep -E '^versionCode=' "$prop" | cut -d= -f2 | tr -d '[:space:]')
+          prop_name=$(grep -E '^version=' "$prop" | cut -d= -f2 | tr -d '[:space:]' | sed 's/^v//')
+
+          # 版本号在两处重复声明（module.prop 给 LSPosed 读，gradle 决定 APK 自身的
+          # versionCode / versionName）。只改一处是最容易发生、又最不容易发现的事故：
+          # 前者不变 → 用户看不到更新；后者不变 → 系统认为装的还是旧包。
+          gradle_code=$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' "$gradle_file" | head -1)
+          gradle_name=$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$gradle_file" | head -1)
+
+          echo "module.prop: $prop_code / $prop_name"
+          echo "gradle     : $gradle_code / $gradle_name"
+
+          if [ "$prop_code" != "$gradle_code" ]; then
+            echo "::error::versionCode 不一致（module.prop=$prop_code, build.gradle.kts=$gradle_code），先对齐再发版"
+            exit 1
+          fi
+          if [ "$prop_name" != "$gradle_name" ]; then
+            echo "::error::versionName 不一致（module.prop=$prop_name, build.gradle.kts=$gradle_name），先对齐再发版"
+            exit 1
+          fi
+
+          tag="v${prop_name}"
+          echo "version_code=$prop_code" >> "$GITHUB_OUTPUT"
+          echo "version_name=$prop_name" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          force="${{ github.event.inputs.force || 'false' }}"
+          if [ "$force" = "true" ]; then
+            echo "强制发布，跳过已存在检查"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "$tag 已存在，跳过构建（要覆盖请手动触发并勾选 force）"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: 构建 release APK
+    needs: guard
+    if: needs.guard.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 设置 JDK 21
+        # 与本地验证环境一致（AGP 9 + Gradle 9.4 在 JDK 21 上跑通）。
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: 缓存 Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: 配置固定签名（有 secret 就用，没有就退回 debug 签名）
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+            {
+              echo "KEYSTORE_PATH=$RUNNER_TEMP/keystore.jks"
+              echo "KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-android}"
+              echo "KEYSTORE_ALIAS=${KEYSTORE_ALIAS:-androiddebugkey}"
+              echo "KEYSTORE_KEY_PASSWORD=${KEYSTORE_KEY_PASSWORD:-android}"
+            } >> "$GITHUB_ENV"
+            echo "使用 KEYSTORE_BASE64 提供的固定签名"
+          else
+            echo "::warning::未配置 KEYSTORE_BASE64，本次使用 runner 现生成的 debug 签名 —— 与历史版本签名不一致，设备上更新模块需要先卸载"
+          fi
+
+      - name: 构建
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: 校验产物（R8 是否吃掉了模块入口）
+        # 这一步是本项目的血泪教训的固化：Debug 不走 R8，proguard 规则写错在本地
+        # 完全看不出来，只有装到手机上才发现模块静默不生效。这里直接检查
+        # java_init.list 引用的类名是否真的存在于 dex 中，把问题挡在发布之前。
+        run: |
+          python3 - <<'PY'
+          import re, sys, zipfile, pathlib
+
+          apk = pathlib.Path("app/build/outputs/apk/release/app-release.apk")
+          if not apk.is_file():
+              sys.exit(f"找不到产物 {apk}")
+
+          with zipfile.ZipFile(apk) as z:
+              names = z.namelist()
+              for required in ("META-INF/xposed/module.prop",
+                               "META-INF/xposed/java_init.list",
+                               "META-INF/xposed/scope.list"):
+                  if required not in names:
+                      sys.exit(f"APK 里缺少 {required}")
+              entries = z.read("META-INF/xposed/java_init.list").decode().split()
+              dex = b"".join(z.read(n) for n in names if re.fullmatch(r"classes\d*\.dex", n))
+              prop = z.read("META-INF/xposed/module.prop").decode()
+
+          print(f"APK: {apk} ({apk.stat().st_size} bytes, dex {len(dex)} bytes)")
+          if not entries:
+              sys.exit("java_init.list 为空")
+
+          for entry in entries:
+              desc = ("L" + entry.strip().replace(".", "/") + ";").encode()
+              present = desc in dex
+              print(f"  入口 {entry}: {'OK' if present else '缺失'}")
+              if not present:
+                  sys.exit(f"入口类 {entry} 不在 dex 里 —— R8 把它改名或删了，检查 proguard-rules.pro 的 -keep")
+
+          print("module.prop:")
+          for line in prop.splitlines():
+              if line.startswith(("version", "versionCode")):
+                  print("  " + line)
+          PY
+
+      - name: 准备更新说明
+        run: |
+          set -euo pipefail
+          ver="${{ needs.guard.outputs.version_name }}"
+          section=""
+          # 按 CHANGELOG.md 里「## x.x.x」段取更新说明；找不到就退回提交记录。
+          if [ -f CHANGELOG.md ]; then
+            section=$(awk -v v="$ver" '
+              /^## / { t = $2; sub(/^v/, "", t); flag = (t == v) ; next }
+              flag { print }
+            ' CHANGELOG.md | sed '/^[[:space:]]*$/d')
+          fi
+          if [ -n "$section" ]; then
+            printf '更新内容:\n%s\n' "$section" > RELEASE_NOTES.md
+          else
+            printf '更新内容:\n' > RELEASE_NOTES.md
+            git log --no-merges --pretty='- %s' -10 >> RELEASE_NOTES.md
+          fi
+          echo "" >> RELEASE_NOTES.md
+          echo "构建自 \`${{ github.sha }}\`" >> RELEASE_NOTES.md
+          echo "---- RELEASE_NOTES.md ----"
+          cat RELEASE_NOTES.md
+
+      - name: 保存产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: KugouHook-${{ needs.guard.outputs.version_name }}
+          path: app/build/outputs/apk/release/app-release.apk
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.guard.outputs.tag }}"
+          # 走到这里说明 guard 判定过 tag 不存在（或用户强制覆盖），直接创建。
+          gh release create "$tag" \
+            app/build/outputs/apk/release/app-release.apk \
+            --repo "${{ github.repository }}" \
+            --title "KugouHook ${tag}" \
+            --notes-file RELEASE_NOTES.md \
+            --latest
