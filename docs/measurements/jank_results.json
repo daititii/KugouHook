@@ -1,0 +1,54 @@
+[
+ {
+  "total_frames": 2694,
+  "janky_raw": "259",
+  "janky_pct": 9.61,
+  "p50": 15,
+  "p90": 113,
+  "p95": 150,
+  "p99": 450,
+  "slow_ui": 258,
+  "deadline_missed": 259,
+  "label": "baseline_no_hook",
+  "seconds": 40
+ },
+ {
+  "total_frames": 5156,
+  "janky_raw": "0",
+  "janky_pct": 0.0,
+  "p50": 15,
+  "p90": 53,
+  "p95": 57,
+  "p99": 73,
+  "slow_ui": 0,
+  "deadline_missed": 0,
+  "label": "v11_l1",
+  "seconds": 40
+ },
+ {
+  "total_frames": 5532,
+  "janky_raw": "0",
+  "janky_pct": 0.0,
+  "p50": 14,
+  "p90": 46,
+  "p95": 48,
+  "p99": 69,
+  "slow_ui": 0,
+  "deadline_missed": 0,
+  "label": "v11_warm2",
+  "seconds": 40
+ },
+ {
+  "total_frames": 2166,
+  "janky_raw": "117",
+  "janky_pct": 5.4,
+  "p50": 25,
+  "p90": 109,
+  "p95": 150,
+  "p99": 850,
+  "slow_ui": 116,
+  "deadline_missed": 117,
+  "label": "no_hook_hot",
+  "seconds": 40
+ }
+]

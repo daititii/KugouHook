@@ -1,0 +1,35 @@
+[
+ {
+  "label": "no_hook",
+  "rounds": 5,
+  "splash_seen": 5,
+  "rate": 100.0,
+  "detail": [
+   {
+    "round": 1,
+    "splash_at_front": true,
+    "shot": true
+   },
+   {
+    "round": 2,
+    "splash_at_front": true,
+    "shot": true
+   },
+   {
+    "round": 3,
+    "splash_at_front": true,
+    "shot": true
+   },
+   {
+    "round": 4,
+    "splash_at_front": true,
+    "shot": true
+   },
+   {
+    "round": 5,
+    "splash_at_front": true,
+    "shot": true
+   }
+  ]
+ }
+]

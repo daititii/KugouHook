@@ -1,0 +1,50 @@
+# Gradle / Android 构建产物
+.gradle/
+build/
+**/build/
+.kotlin/
+*.iml
+.idea/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# Kotlin
+*.kotlin_module
+
+# 日志
+*.log
+
+# 临时 / 备份
+*~
+*.bak
+*.swp
+
+# 编辑器
+.vscode/
+
+# 设备一次性采集：LSPosed 状态、日志导出、模块作用域等
+LSPosed_*/
+lspd-*/
+scopes*.txt
+logcat*.txt
+
+# Frida 运行期产物（daemon pid、统计落盘）
+frida/*.pid
+frida/last_result.json
+frida/stats*.json
+
+# 反向工程中间产物：宿主 APK / 解包出的 .so —— 都可从设备重新拉取，不进版本库
+*.apk
+*.so
+kugou_pkg/
+libs/
