@@ -75,19 +75,21 @@ adb shell su -c 'touch /data/data/com.kugou.android/cache/kugouhook.audit'
 ./gradlew :app:assembleRelease    # R8 混淆 + 资源收缩，发布用
 ```
 
-推送到 `main` 且改动涉及 `app/`、构建脚本或 workflow 时，CI 会自动构建 release APK 并发布到
-本仓库的 Releases（tag 为 `v<versionName>`，版本号从 `module.prop` 读）。
+推送到 `main` 且改动涉及 `app/`、构建脚本或 workflow 时，CI 只构建、不发布：
 
-**默认发预发布（prerelease），不是正式版。** 自动构建只证明"能编出来、入口类没被 R8 吃掉"，
-不证明在本机装上去真的有效；把没上机验证过的包标成正式版，等于对外宣布它稳定。而 prerelease
-不会被 GitHub 当作 latest，所以"最新正式版"始终指向你亲自确认过的那一版。
+- **push → 只构建**：跑编译、R8 入口类检查，APK 挂在该次 run 的 Artifacts 里下载。**不建 Release、不动 tag。**
+- **手动触发 → 才发布**：默认发预发布（prerelease），勾选 `stable` 才发正式版。
+
+每次提交都产出一个 Release 会让版本列表迅速变成一堆没人验证过的包，"最新版"也就失去意义。
+构建产物本来就能在 run 里拿到，Release 只留决定要发的。
 
 | 场景 | 操作 | 结果 |
 |---|---|---|
-| 日常推送 | 直接 push `main` | 自动构建，发 **预发布** |
-| 同一版本重建 | 手动触发，勾 `force` | 覆盖该版本的预发布 |
-| 验证通过转正式 | 手动触发，勾 `force` + `stable` | 覆盖并转成正式版，标记 latest |
-| 版本号没变想跳过 | —— | 自动跳过（同版本已存在） |
+| 日常推送 | 直接 push `main` | 只构建，产物在 run 的 Artifacts |
+| 发预发布 | Actions → 手动触发 | 创建 `v<versionName>` 预发布（不算 latest） |
+| 发正式版 | 手动触发 + 勾 `stable` | 创建正式版并标记 latest |
+| 同版本要重建 | 手动触发 + 勾 `force` | 删掉旧 Release 后重建 |
+| 同版本没勾 force | 手动触发 | 直接失败并提示先升版本号 |
 
 ### 发布前必须做的两件事
 

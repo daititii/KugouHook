@@ -1,12 +1,17 @@
-name: Release
+name: Build & Release
 
-# 什么时候构建：
-#   - push 到 main，且改动落在会影响 APK 的路径（纯文档改动不构建）
-#   - 手动触发（force=true 时即使版本号没变也重新构建并覆盖发布）
+# 两条触发路径，职责分开：
 #
-# 什么时候发布：版本号（module.prop 的 versionCode）没有对应的 Release 时自动发布；
-# 已存在就跳过，避免同样的版本被反复覆盖 —— 覆盖会让已经装了该版本的用户
-# 收不到"有更新"的信号，也会让 Release 的下载数失去意义。
+#   push → main   只构建：跑编译、R8 检查、把 APK 传成 workflow artifact。
+#                 **不创建 Release**，不碰 tag。产物在 run 页面底部下载。
+#
+#   手动触发       构建 + 发布。默认发**预发布**（prerelease）；勾选 stable 才发正式版。
+#
+# 为什么 push 不发版：每次提交都产出一个 Release，版本列表会迅速变成一堆没人验证过的包，
+# "最新版"也就失去了意义。构建产物本来就能在 run 里拿到，Release 应该只留决定要发的那几个。
+#
+# 为什么默认预发布：自动构建只证明"能编出来、入口类没被 R8 吃掉"，不证明在本机装上去有效。
+# prerelease 不会被 GitHub 当作 latest，所以"最新正式版"始终指向你亲自确认过的那一版。
 
 on:
   push:
@@ -22,34 +27,22 @@ on:
       - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
-      force:
-        description: '版本号未变化也强制重建并覆盖发布'
-        required: false
-        type: boolean
-        default: false
       stable:
-        description: '发为正式版（默认发预发布）'
+        description: '发为正式版（默认预发布）'
         required: false
         type: boolean
         default: false
-
-# 发布策略：**默认预发布**。
-#
-# 自动构建出来的包一律标 prerelease —— 它只证明"能编出来、入口类没被 R8 吃掉"，
-# 不证明在本机装上去真的有效。把没上机验证过的包标成正式版，等于对外宣布它是稳定的，
-# 而模块一旦静默失效，用户只会觉得"这模块坏了"，不会想到去看版本号。
-#
-# 什么时候可以发正式版：真机验证通过之后，手动触发本 workflow 并勾上
-# force + stable（force 才能覆盖已存在的预发布）。
-#
-# 另外 prerelease 不会被 GitHub 当作 latest，所以"最新正式版"始终指向你确认过的那一版。
+      force:
+        description: '该版本已有 Release 时仍然覆盖'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
-# 发布是串行的：两个构建同时抢同一个 tag 会互相删 Release。
 concurrency:
-  group: release-main
+  group: build-main
   cancel-in-progress: false
 
 jobs:
@@ -57,7 +50,6 @@ jobs:
     name: 版本与一致性检查
     runs-on: ubuntu-latest
     outputs:
-      should_build: ${{ steps.ver.outputs.should_build }}
       tag: ${{ steps.ver.outputs.tag }}
       version_name: ${{ steps.ver.outputs.version_name }}
       version_code: ${{ steps.ver.outputs.version_code }}
@@ -94,28 +86,26 @@ jobs:
             exit 1
           fi
 
-          tag="v${prop_name}"
           echo "version_code=$prop_code" >> "$GITHUB_OUTPUT"
           echo "version_name=$prop_name" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "tag=v${prop_name}" >> "$GITHUB_OUTPUT"
 
-          force="${{ github.event.inputs.force || 'false' }}"
-          if [ "$force" = "true" ]; then
-            echo "强制发布，跳过已存在检查"
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          # push 只构建，不必检查同名 Release；只有手动发布时才需要提前拦重复。
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
             exit 0
           fi
-          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "$tag 已存在，跳过构建（要覆盖/转正式版：手动触发并勾选 force，转正式版再加勾 stable）"
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event.inputs.force || 'false' }}" = "true" ]; then
+            echo "force=true，允许覆盖已有 Release"
+            exit 0
+          fi
+          if gh release view "v${prop_name}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::error::v${prop_name} 已有 Release。要覆盖请手动触发并勾选 force；要发新版本请先升版本号"
+            exit 1
           fi
 
   build:
-    name: 构建 release APK
+    name: 构建
     needs: guard
-    if: needs.guard.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -164,9 +154,9 @@ jobs:
           ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
       - name: 校验产物（R8 是否吃掉了模块入口）
-        # 这一步是本项目的血泪教训的固化：Debug 不走 R8，proguard 规则写错在本地
-        # 完全看不出来，只有装到手机上才发现模块静默不生效。这里直接检查
-        # java_init.list 引用的类名是否真的存在于 dex 中，把问题挡在发布之前。
+        # 这一步是本项目血泪教训的固化：Debug 不走 R8，proguard 规则写错在本地完全看不出来，
+        # 只有装到手机上才发现模块静默不生效。这里直接检查 java_init.list 引用的类名
+        # 是否真的存在于 dex 中，把问题挡在发布之前。
         run: |
           python3 - <<'PY'
           import re, sys, zipfile, pathlib
@@ -203,7 +193,16 @@ jobs:
                   print("  " + line)
           PY
 
+      - name: 保存产物
+        # push 触发的构建到此为止 —— 产物在 run 页面的 Artifacts 里下载，不创建 Release。
+        uses: actions/upload-artifact@v4
+        with:
+          name: KugouHook-${{ needs.guard.outputs.version_name }}-${{ github.sha }}
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
       - name: 准备更新说明
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           ver="${{ needs.guard.outputs.version_name }}"
@@ -226,32 +225,32 @@ jobs:
           echo "---- RELEASE_NOTES.md ----"
           cat RELEASE_NOTES.md
 
-      - name: 保存产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: KugouHook-${{ needs.guard.outputs.version_name }}
-          path: app/build/outputs/apk/release/app-release.apk
-
-      - name: 发布 Release（默认预发布）
+      - name: 发布 Release（仅手动触发）
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="${{ needs.guard.outputs.tag }}"
-          stable="${{ github.event.inputs.stable || 'false' }}"
-          # --prerelease 与 --latest 互斥：预发布不应被当成最新正式版。
-          if [ "$stable" = "true" ]; then
+          apk=app/build/outputs/apk/release/app-release.apk
+
+          # force：同 tag 已存在时先删再建（gh 不允许同名重复创建）。
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "覆盖已有 Release $tag"
+            gh release delete "$tag" --repo "${{ github.repository }}" --yes
+          fi
+
+          # --prerelease 与 --latest 互斥：预发布不能被当成最新正式版。
+          if [ "${{ github.event.inputs.stable || 'false' }}" = "true" ]; then
             echo "发布正式版 $tag"
-            gh release create "$tag" \
-              app/build/outputs/apk/release/app-release.apk \
+            gh release create "$tag" "$apk" \
               --repo "${{ github.repository }}" \
               --title "KugouHook ${tag}" \
               --notes-file RELEASE_NOTES.md \
               --latest
           else
             echo "发布预发布 $tag"
-            gh release create "$tag" \
-              app/build/outputs/apk/release/app-release.apk \
+            gh release create "$tag" "$apk" \
               --repo "${{ github.repository }}" \
               --title "KugouHook ${tag} (预发布)" \
               --notes-file RELEASE_NOTES.md \
