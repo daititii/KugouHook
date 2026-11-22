@@ -37,7 +37,7 @@
 | Android | 8.0（API 26）及以上，仅 `arm64-v8a` |
 | LSPosed | Modern API 102+ |
 | 作用域 | `com.kugou.android` |
-| 模块包名 | `dev.kugou.kugouhook` |
+| 模块包名 | `io.github.daititii.kugouhook`（v0.1.2 起） |
 
 ## 当前状态
 
