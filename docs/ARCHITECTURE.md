@@ -15,7 +15,9 @@ app/src/main/java/dev/kugou/kugouhook/
 └── hooks/
     ├── AdHooks.kt          推荐流广告：CopyOnWriteArrayList.add(E) 过滤
     ├── MineBannerHooks.kt  「我的」页动态 banner：delegate 返回 null
-    └── SplashAdHooks.kt    开屏运营广告：素材成功回调改走 onNoAD
+    ├── SplashAdHooks.kt    开屏运营广告：素材成功回调改走 onNoAD
+    └── VipPromptHooks.kt   会员促销界面：会员标、运营卡片、队列推广、
+                            购买弹窗、迷你栏试听提示（版本限定）
 ```
 
 分层很简单：`KugouModule` 负责**什么时候**装，`hooks/*` 负责**装什么**，
@@ -82,7 +84,11 @@ app/src/main/java/dev/kugou/kugouhook/
 
 缓存是必须的：反射查类在 23 万类的 APK 上不便宜，但每个目标只查一次。
 
-## hooks/：三条规则，一个判据
+## hooks/：四条主线，一个判据
+
+前三组（`AdHooks` / `MineBannerHooks` / `SplashAdHooks`）处理广告素材本身，
+第四组 `VipPromptHooks` 处理"不让你听/不让你用"的会员促销界面。两者的判据相同：
+**只切断界面呈现，不动任何业务状态。**
 
 ### AdHooks
 
@@ -128,6 +134,27 @@ app/src/main/java/dev/kugou/kugouhook/
 
 拦截发生在素材成功回调阶段，**不保证广告网络请求未发出**。
 
+### VipPromptHooks
+
+这一组和上面三组的性质不同：**它不拦广告，它拦"卖东西"的界面。**
+
+覆盖运营商积分兑会员、会员中心/金币中心卡片、昵称旁会员标、播放队列推广横幅、
+自动购买弹窗、迷你播放栏试听提示，以及搜索首页的视频广告位。
+
+三条约束决定了它的写法：
+
+1. **只对 20.6.4 生效。** 这些规则依赖具体控件 ID（如队列横幅的 `0x7f0aafe3`），
+   换了版本 ID 可能指向别的控件。与其冒险误伤，不如在新版本上明确跳过——
+   `KugouModule` 里只有版本号等于 `AUDITED_VERSION_CODE` 时才装这一组。
+2. **拦的是"呈现"，不是"能力"。** 自动购买弹窗只在它即将弹出时短路，
+   试听计时、播放状态、会员权限一律不碰。用户仍然只能按原有权限听歌。
+3. **共享容器不能整体隐藏。** 搜索历史那次事故就是教训：`uo_` 同时承载历史、
+   快捷入口和广告位，隐藏容器等于删掉用户的历史。现在只跳过广告素材的绑定，
+   容器可见性不动。
+
+队列横幅同理：`dyt0` 是队列内容容器，隐藏它会连歌曲列表一起消失；
+真正要隐藏的是专用的 `e0`，通过 `QueueListSlidingLayout#I0(boolean)` 定位。
+
 ## ApkVersion：为什么手写 AXML 解析
 
 `onPackageReady` 阶段 Application 对象还不存在，拿不到 Context，而且
@@ -161,7 +188,7 @@ app/src/main/java/dev/kugou/kugouhook/
 
 | 项 | FanqieHook | 本项目 | 原因 |
 |---|---|---|---|
-| 目标数量 | 69 条 hook | 6 条 | 酷狗已确认的 L1 汇聚点就这些，先做对再做多 |
+| 目标数量 | 69 条 hook | 22 条规则 | 酷狗已确认的 L1 汇聚点就这些，先做对再做多 |
 | DexKit | 依赖 | 不依赖 | 类名来自实机 dump，不需要运行时扫 dex |
 | 覆盖策略 | 被动广告位统一返回"无广告" | 逐条找 L1 汇聚点 | 酷狗各广告位数据源确实不同，没有统一闸门 |
 | 版本门禁 | 建议性 | 建议性 | 相同，理由见上 |

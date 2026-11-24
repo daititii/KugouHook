@@ -8,7 +8,8 @@
 >
 > - 想直接用：看 [../README.md](../README.md)
 > - 想读代码：看 [ARCHITECTURE.md](ARCHITECTURE.md)
-> - 想复现实验：脚本在 [../frida/](../frida/)，路径以该目录为基准
+> - 想复现实验：Frida 脚本**已移出本仓库**，放在工作区同级目录 `G:\hook_test\frida`。
+>   下文所有 `frida/...` 路径都指那里，不进 git。
 >
 > 文中提到的部分探针脚本（如 `where.js`）属于一次性排查工具，已随整理移除；
 > 结论都留在了正文里。
@@ -405,6 +406,8 @@ L2 属于"从源头阻断请求"的优化，不影响功能完整性。
 ---
 
 ## 九、工具链
+
+> 这些脚本不在本仓库里，位于 `G:\hook_test\frida`，仅为复现历史实验留存。
 
 ```
 frida/kugou_adblock.py        一键启动（spawn + 延迟注入 + 统计落盘）

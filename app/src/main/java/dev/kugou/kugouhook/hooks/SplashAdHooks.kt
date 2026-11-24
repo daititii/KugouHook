@@ -7,7 +7,16 @@ import java.lang.reflect.Constructor
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
-/** Replaces the operation splash's successful fetch callback with the no-ad callback. */
+/**
+ * 拦截 TME 运营开屏的素材成功回调，改走 `onNoAD`。
+ *
+ * 覆盖 `BaseSplashUnitAgent#e0()` 里的 `z12` 分支（带 `UniParallelFetcher` 的那条）：
+ * 分发器 `ce.f` 把两个素材成功回调与 `onNoAD` 分发给同一批监听器，所以在这里
+ * 用一个"无广告"结果替换成功回调即可。
+ *
+ * 注意这条**不覆盖**全屏「运营推广」卡片（`SplashCard` 直接由 `SplashV4` 绘制的那种），
+ * 那个由 [SplashGateHooks] 在内容判定层拦掉。
+ */
 class SplashAdHooks(
     private val resolver: ClassResolver,
     private val hooks: HookManager,

@@ -9,6 +9,9 @@ import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import dev.kugou.kugouhook.hooks.AdHooks
 import dev.kugou.kugouhook.hooks.MineBannerHooks
 import dev.kugou.kugouhook.hooks.SplashAdHooks
+import dev.kugou.kugouhook.hooks.SplashGateHooks
+import dev.kugou.kugouhook.hooks.UiProbeHooks
+import dev.kugou.kugouhook.hooks.UpdatePromptHooks
 import dev.kugou.kugouhook.hooks.VipPromptHooks
 import java.io.File
 
@@ -85,6 +88,8 @@ class KugouModule : XposedModule() {
             File(param.applicationInfo.dataDir, "cache/$LOG_FILE")
         }.getOrNull()
         log.info("=== KugouHook start (pid=${android.os.Process.myPid()}) ===")
+        // 先自报模块版本：排查"装了但没效果"时，第一条要知道的就是跑得到底是哪份包。
+        log.info("module: ${ModuleMeta.describe(ModuleMeta.ownApkPath())}")
 
         val versionCode = readVersionCode(param)
         if (versionCode == AUDITED_VERSION_CODE) {
@@ -104,6 +109,9 @@ class KugouModule : XposedModule() {
         }.getOrDefault(false)
         if (audit) log.info("hit audit enabled")
 
+        val flags = Flags(param.applicationInfo.dataDir)
+        log.info("flags: ${flags.describe()}")
+
         val hm = HookManager(this, log, auditHits = audit)
         hookManager = hm
 
@@ -114,6 +122,15 @@ class KugouModule : XposedModule() {
             .onFailure { log.error("MineBannerHooks failed", it) }
         runCatching { SplashAdHooks(resolver, hm, log).install() }
             .onFailure { log.error("SplashAdHooks failed", it) }
+        // 开屏广告的数据层闸门：抽样不通过即不产生广告开屏，普通开屏保留。
+        runCatching { SplashGateHooks(resolver, hm, log).install() }
+            .onFailure { log.error("SplashGateHooks failed", it) }
+        // 升级弹窗按 IVersionUpgrade 的接口语义拦截，不依赖具体控件 ID，因此不设版本门控。
+        runCatching { UpdatePromptHooks(resolver, hm, log).install() }
+            .onFailure { log.error("UpdatePromptHooks failed", it) }
+        // 观测钩子：默认关闭，由 kugouhook.flags 的 ui.probe 控制。
+        runCatching { UiProbeHooks(resolver, hm, log, flags).install() }
+            .onFailure { log.error("UiProbeHooks failed", it) }
         if (versionCode == AUDITED_VERSION_CODE) {
             runCatching { VipPromptHooks(resolver, hm, log).install() }
                 .onFailure { log.error("VipPromptHooks failed", it) }

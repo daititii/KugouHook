@@ -1,0 +1,134 @@
+# AGENTS.md
+
+给接手这个仓库的编程 agent（也包括未来的我自己）看的工作约定。**用户文档在
+[README.md](README.md)，架构原理在 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，本文只讲
+"怎么动手、怎么验证、哪些不能碰"。**
+
+## 项目定位
+
+LSPosed 模块，目标进程 `com.kugou.android` 主进程。只做**界面层**的广告与会员促销隐藏：
+不改变会员状态、不延长试听、不修改播放权限、不破解任何服务端校验。
+
+## 环境事实
+
+| 项 | 值 |
+|---|---|
+| 工作区 | `G:\hook_test`；仓库 `G:\hook_test\KugouHook` |
+| 宿主版本 | 酷狗 20.6.4 / versionCode `20649`（`KugouModule.AUDITED_VERSION_CODE`） |
+| 设备 | 小米 23117RK66C / Android 16 / arm64 / `adb -s 1b862d7c` |
+| 框架 | LSPosed v2.2.1（7912），Modern API 102 |
+| 构建 | `.\gradlew.bat --offline :app:assembleDebug :app:assembleRelease` |
+| SDK 工具 | `G:\Android_SDK\build-tools\36.1.0`、`G:\Android_SDK\platform-tools\adb.exe` |
+| 冷启动 | `adb -s 1b862d7c shell 'am force-stop com.kugou.android && am start -W -n com.kugou.android/.app.splash.SplashActivity'` |
+
+本机内存 16 GB。JADX 图形界面自身可占到 4.8 GB（`-XX:MaxRAMPercentage=70.0`），
+**跑后台反编译前必须先关它**，否则系统会因交换空间被打满而整体卡死。
+
+## 动代码前必须知道的三件事
+
+1. **hook 点是精确反射 + 资源 ID，不是模糊扫描。** 类名逐版本漂移，但漂移是逐条的。
+   `HookManager` 逐条 `try/catch`，某条找不到只跳过它并记 `lost`，其余照常装。
+   不要写成"版本号不认识就一条都不装"。
+2. **UI 隐藏不等于功能可用。** 隐藏按钮或横幅时，必须确保原逻辑不 proceed
+   （否则宿主仍会渲染），同时**不能**截断试听计时、改变播放状态或伪造会员返回。
+3. **共享容器不要整体 `View.GONE`。** 搜索历史那次事故就是这么来的：`uo_` 是历史和
+   快捷入口共用的容器，隐藏它等于删掉用户的历史。拦截要落在**专用**控件或专用回调上。
+
+## 验证纪律
+
+**没在真机上验证过的改动不进 `main`。**
+
+最小验证回路：
+
+1. `adb install -r` 装 Debug 包 → 冷启动 → `adb logcat -d -s KugouHook:V` 找
+   `KugouHook start (pid=...)`，确认本次启动的 `install summary`。
+2. 需要逐条命中证据时：`adb shell su -c 'touch /data/data/com.kugou.android/cache/kugouhook.audit'`
+   再冷启动。**没有 `hook hit` 说明入口找错了；有 `hook hit` 但界面没变，说明 hook 点不对。**
+   两种情况修法相反，不许靠猜。
+3. 关掉模块作用域做对照（冷启动各一次），确认差异是模块造成的而不是缓存。
+4. 具体观察写进 [docs/DEVICE-VERIFICATION.md](docs/DEVICE-VERIFICATION.md)，写"看到了什么"，
+   不写"应该可以"。
+
+日志位置：`adb shell su -c 'cat /data/data/com.kugou.android/cache/kugouhook.log'`
+
+## 发布流程
+
+| 场景 | 操作 | 结果 |
+|---|---|---|
+| 日常推送 | push `main` | 只构建 + R8 入口检查，产物在 Actions Artifacts，**不建 Release** |
+| 发预发布 | Actions 手动触发 | 建 `v<versionName>` 预发布 |
+| 发正式版 | 手动触发 + 勾 `stable` | 建正式版并标 latest |
+| 同版本重建 | 手动触发 + 勾 `force` | 删旧 Release 重建；不勾则失败并提示升版本 |
+
+**版本号必须两处同步改**，CI 第一步就比对：
+
+- `app/src/main/resources/META-INF/xposed/module.prop` 的 `version` / `versionCode`（LSPosed 读）
+- `app/build.gradle.kts` 的 `versionName` / `versionCode`（Android 读）
+
+签名材料在 `%LOCALAPPDATA%\KugouHook\Signing\`（`release.jks` + DPAPI 保护的
+`release-password.dpapi`），仓库 Actions secrets 已配置。**任何情况下不打印密钥、口令或 token。**
+
+`applicationId`（`io.github.daititii.kugouhook`）是 Android 与 LSPosed 的模块身份，
+改名等于换一个模块：用户必须先禁用旧包再启用新包。Kotlin 包名
+`dev.kugou.kugouhook`、`java_init.list` 入口、R8 规则、作用域 `com.kugou.android` 与之无关，不要跟着改。
+
+## 逆向工具（JADX）
+
+宿主 APK：`G:\hook_test\kugou-20649-base.apk`（169 MB，29 个 dex，**233,900 个类**）。
+
+**禁止的三类操作**（会把 JADX 索引线程打满，导致用户整机卡死）：
+
+1. 整包 `aapt2 dump resources`
+2. `search_in=code` 的全量代码搜索
+3. 无分页地拉取整份 AndroidManifest（单次 445 KB）
+
+只允许：类名索引搜索（毫秒级）、单个类源码读取、单个方法读取。**一次只发一个重查询，
+超时就停，不并行、不自动重试。**
+
+需要按逻辑全文检索时，走离线导出而不是查图形界面：
+
+```powershell
+# 必须先用 CloseMainWindow 关掉 JADX GUI，再跑
+& 'D:\jdk21\bin\java.exe' -Xmx9g -XX:+UseParallelGC `
+  -cp 'G:\jadx\lib\jadx-gui-1.5.7-all.jar' jadx.cli.JadxCLI `
+  -r -j 6 --no-debug-info -d G:\hook_test\kugou-20649-src `
+  G:\hook_test\kugou-20649-base.apk
+```
+
+`-Xmx4g` 会在 `load()` 阶段 OOM（已实测），不要用。
+
+## 已确认的逆向事实
+
+- `com.kugou.android.app.splash.SplashActivity` 在清单里存在，但**代码里不存在**同名类，
+  启动页是动态代理的壳。查启动期逻辑不要从这个类名入手。
+- **开屏广告有两条独立链路**，不要以为拦了一条就干净了：
+  1. TME 运营开屏：`UniParallelFetcher` 存在时走 `ce.f` 分发，拦 `onADFetch` 有效。
+  2. 全屏「运营推广」卡片：`BaseSplashUnitAgent#e0` 的 `z16` 分支，由 `SplashV4` 直接
+     驱动 `SplashCard` 绘制（`SplashDrawer` 是 SurfaceView 自绘）。**这条没有任何
+     "下载→回调→展示"环节**，所有回调层的 hook 都碰不到它。有效拦点是
+     `yk0.g#e(SplashV4)` 返回 false。
+- 宿主带 `libFireEye-rqd.so` 等反调试库；Frida 时代实测 hook `Activity.onCreate` 会
+  `raise(SIGSEGV)`。`Java.enumerateLoadedClassesSync()` 在 23 万类上要 13 秒。
+- `com.kugou.snow.LooperThreadThief.snowLoop` 会抢主 Looper，任何依赖主线程时序的设计都不稳。
+- 不要往子进程（`:support`、`:message`）注 hook，没有收益只有风险。
+
+## 定位方法：先观测，再拦截
+
+找广告/弹窗的入口时，**不要靠反编译猜类名**。正确顺序是：
+
+1. 写 `cache/kugouhook.flags` 内容 `ui.probe=1`，冷启动。
+2. `UiProbeHooks` 会 hook `Dialog.show`、`PopupWindow.showAtLocation`、`SurfaceView` 构造，
+   命中时打印**去掉系统帧的调用栈**——宿主自己的类名和调用链直接出现在日志里。
+3. 按日志里的类名做单类反编译（见下），确认该拦哪一处。
+4. 拦完用截图验证，**不要用"日志有 hit"当作成功**。
+
+这一步能省掉几轮"猜错→重编译→装机→没命中"的循环。
+
+Frida 脚本已移出本仓库，存在 `G:\hook_test\frida`，不进 git，仅为历史参考。
+
+## 不许做的事
+
+- 不提交任何宿主 APK、反编译产物、日志文件到仓库。
+- 不发布"编译通过但没上机验证"的版本。
+- 不在 README 里写内部规则数量、类名清单这类只对开发者有意义的细节。
+- 不为了"让功能看起来更多"去 hook 与广告无关的路径。

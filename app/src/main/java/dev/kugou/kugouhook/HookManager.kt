@@ -89,13 +89,14 @@ class HookManager(
      */
     fun install(
         id: String,
-        method: Method?,
+        method: java.lang.reflect.Executable?,
         deoptimize: Boolean = false,
         requireVoid: Boolean = false,
         body: (Chain) -> Any?
     ): HookHandle? {
         if (method == null) return noteSkip(id, "method not found")
-        if (requireVoid && method.returnType != java.lang.Void.TYPE) {
+        // 构造函数没有返回类型，不参与 void 检查。
+        if (requireVoid && method is Method && method.returnType != java.lang.Void.TYPE) {
             return reportLoss(id, "not a void method: ${method.returnType.name}")
         }
         return installInternal(id, method, deoptimize, body)
@@ -151,11 +152,11 @@ class HookManager(
 
     private fun installInternal(
         id: String,
-        method: Method,
+        method: java.lang.reflect.Executable,
         deoptimize: Boolean,
         body: (Chain) -> Any?
     ): HookHandle? = try {
-        if (deoptimize) {
+        if (deoptimize && method is Method) {
             // 强制调用方不要内联被调方，否则 hook 可能不生效。
             runCatching { module.deoptimize(method) }
                 .onFailure { log.warn("deoptimize failed for $id: ${it.javaClass.simpleName}") }
