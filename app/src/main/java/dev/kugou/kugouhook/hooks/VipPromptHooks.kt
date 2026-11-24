@@ -30,11 +30,14 @@ class VipPromptHooks(
     private val seenMineCoinCard = AtomicBoolean()
     private val seenCoinPull = AtomicBoolean()
     private val seenCarrierBubble = AtomicBoolean()
+    private val seenCarrierOperation = AtomicBoolean()
+    private val seenCarrierOperationText = AtomicBoolean()
     private val seenCarrierBanner = AtomicBoolean()
     private val seenVipSongCount = AtomicBoolean()
     private val seenQueueBanner = AtomicBoolean()
     private val seenTrialLabel = AtomicBoolean()
     private val feeBanners = Collections.synchronizedMap(WeakHashMap<View, Unit>())
+    private val operationSlots = Collections.synchronizedMap(WeakHashMap<View, Unit>())
     private val boundBadges = Collections.synchronizedMap(WeakHashMap<View, Unit>())
 
     fun install() {
@@ -82,7 +85,8 @@ class VipPromptHooks(
         hooks.install("vip.ui.keepBadgeHidden", visibility, requireVoid = true) { chain ->
             val view = chain.thisObject as? View
             val hidden = view != null && (isBadgeId(view.id) && boundBadges.containsKey(view) ||
-                view.id == FEE_BANNER && feeBanners.containsKey(view) && feeBannerKind(view) != null)
+                view.id == FEE_BANNER && feeBanners.containsKey(view) && feeBannerKind(view) != null ||
+                view.id == HOME_OPERATION_AD && operationSlots.containsKey(view))
             if (chain.args[0] != View.GONE && hidden) {
                 null
             } else {
@@ -231,12 +235,26 @@ class VipPromptHooks(
         hooks.install("vip.ui.carrierOperation", exactVoid(holder, "y7"), requireVoid = true) { chain ->
             val result = chain.proceed()
             val view = slot.get(chain.thisObject) as? ViewGroup
-            val tag = view?.takeIf { it.id == HOME_OPERATION_AD }?.tag
-            val text = tag?.takeIf { it.javaClass.simpleName == "HomeUserInfoAdBean" }?.let {
-                val getter = it.javaClass.getMethod("getIcon_text")
-                getter.invoke(it) as? String
+            if (view?.id == HOME_OPERATION_AD) {
+                val tag = view.tag
+                val text = tag?.takeIf { it.javaClass.simpleName == "HomeUserInfoAdBean" }?.let {
+                    val getter = it.javaClass.getMethod("getIcon_text")
+                    getter.invoke(it) as? String
+                }.orEmpty()
+                // 这个槽位（id=HOME_OPERATION_AD）本身就是运营推广位，宿主往里下发什么都算推广，
+                // 所以不按文案词表判断：服务端已经换过一次文案（"积分兑会员" → "免费领会员"），
+                // 按词表匹配必然滞后一轮。
+                if (isOperationPromo(view, text)) {
+                    operationSlots[view] = Unit
+                    if (seenCarrierOperationText.compareAndSet(false, true)) {
+                        log.info("suppressed home operation promo text=[$text]")
+                    }
+                    hide(view, seenCarrierOperation, "home operation promo")
+                } else {
+                    // ViewHolder 会被复用。槽位改下发正常内容时必须撤销守护，否则会一直挡住。
+                    operationSlots.remove(view)
+                }
             }
-            if (isCarrierPromo(text.orEmpty())) hide(view, seenCarrierBubble, "carrier exchange operation")
             result
         }
     }
@@ -380,6 +398,22 @@ class VipPromptHooks(
     private fun isCarrierPromo(text: String): Boolean =
         ("运营商" in text || "移动积分" in text || "联通积分" in text || "电信积分" in text) &&
             "会员" in text && ("积分" in text || "领会员" in text)
+
+    /**
+     * 推荐页顶部运营推广位的判定。
+     *
+     * 不按文案词表：服务端把「运营商积分兑会员」换成「免费领会员」时，旧词表直接漏过。
+     * 这个槽位本身就是推广位，所以判据是"有文案"，只在下面这几种明确属于正常内容的情况下放行。
+     *
+     * 注意这里的放宽是有意的——宁可多隐藏一条推广，也不能因为文案变化就漏掉。
+     * 如果以后这个槽位开始下发正常内容，症状是"推荐页少了某个入口"，届时按实际文案补 [exempt]。
+     */
+    private fun isOperationPromo(view: View, text: String): Boolean {
+        if (text.isBlank()) return false
+        // 宿主把槽位用于正常导航时通常没有 bean tag；带 tag 说明走的是运营位下发通道。
+        if (view.tag?.javaClass?.simpleName == "HomeUserInfoAdBean") return true
+        return false
+    }
 
     private fun field(owner: Class<*>, name: String) =
         runCatching { owner.getDeclaredField(name).apply { isAccessible = true } }.getOrNull()

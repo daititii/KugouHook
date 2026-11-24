@@ -40,6 +40,13 @@
 
 - 搜索首页：回归版曾误将历史和快捷入口所在的共享容器 `uo_` 隐藏。修订后只跳过广告素材绑定，不修改容器可见性。真机同一轮出现 `blocked search home banner material`，历史搜索和热搜榜都在，视频广告不在，输入关键词也能返回歌曲结果。
 - 运营商推广：冷启动曾出现「运营商积分兑会员」；修订后命中 `hidden carrier exchange operation`。
+- 推荐页运营位文案变更：服务端把该槽位的文案从「运营商积分兑会员」换成了「免费领会员」，
+  旧判定靠词表（要求出现「运营商」或「移动/联通/电信积分」），新文案两个都不含，于是漏过。
+  `UiProbeHooks` 之外的观测手段：在 `y7` 里直接打印槽位文案，一次就抓到
+  `home operation slot text=[免费领会员] tag=HomeUserInfoAdBean`，确认它和原来的运营商兑换
+  是**同一个槽位**（`id=HOME_OPERATION_AD`，同一个 bean）。
+  修法不扩词表，而是认定该槽位本身就是运营推广位：只要 tag 是这个 bean 且文案非空就隐藏。
+  三次冷启动各命中一次（`suppressed home operation promo text=[免费领会员]`），规则 `skipped=0`。
 - 购买弹窗和试听提示：搜索周杰伦并点《晴天》，旧版打开购买页，修订版命中 `suppressed automatic playback purchase prompt` 和 `hidden mini-player VIP prompt`，仍进入原有试听流程。未验证所有试听文案、时长或播放入口。
 - 播放队列：旧版出现「含14首会员歌曲，看广告可免费听」和「立即观看」；最终版两者同时消失，来源栏和歌曲列表仍在，命中 `hidden queue VIP banner`。只隐藏专用促销控件，不隐藏队列外层。其他共享歌单横幅的开会员文案未单独在真机复现。
 
