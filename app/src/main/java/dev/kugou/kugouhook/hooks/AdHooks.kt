@@ -42,8 +42,21 @@ class AdHooks(
         const val ADAPTER_DATA_FIELD = "r"
         const val COW_LIST = "java.util.concurrent.CopyOnWriteArrayList"
 
-        /** 推荐流里专门的广告 binder：只负责造广告卡，三个产出 bean 的方法恒返回 0。 */
-        const val INNER_AD_BINDER = "com.kugou.android.app.newtingtab.binder.d"
+        /**
+         * 推荐流里两个专门的广告 binder。
+         *
+         * 它们相邻、同构（都继承 `wz.k`）、各管一类广告，`h0` 造卡 / `g0` 绑定：
+         *
+         * - `binder.c` — Compete/GDT 广告：红果免费短剧、快手极速版、任务中心卡
+         * - `binder.d` — Inner/会员推广：免费领酷狗音乐VIP、42天畅听卡
+         *
+         * 卡片布局 id 也相邻（2131562752 / 2131562753），说明是同一批生成的兄弟类。
+         * 只拦其中一个，另一个渲染的卡照样会露出来。
+         */
+        val INNER_AD_BINDERS = listOf(
+            "com.kugou.android.app.newtingtab.binder.c",
+            "com.kugou.android.app.newtingtab.binder.d",
+        )
 
         /** 广告 bean 的 module 串特征（服务端下发，抗混淆）。 */
         const val AD_MODULE_MARK = "_ad"
@@ -90,74 +103,77 @@ class AdHooks(
      * 只影响展示：不改变广告请求、不影响推荐流其它卡片、不碰任何会员或播放逻辑。
      */
     private fun installInnerAdCardBlock() {
-        val id = "ad.innerCard.block"
-        val binder = resolver.findClass(INNER_AD_BINDER) ?: run {
-            hooks.reportLoss(id, "inner ad binder missing")
-            return
-        }
-        val inflater = resolver.findClass("android.view.LayoutInflater")
         val layoutInflaterType = runCatching { Class.forName("android.view.LayoutInflater") }.getOrNull()
         val viewGroupType = runCatching { Class.forName("android.view.ViewGroup") }.getOrNull()
         if (layoutInflaterType == null || viewGroupType == null) {
-            hooks.reportLoss(id, "inflater types unavailable")
+            hooks.reportLoss("ad.innerCard.block", "inflater types unavailable")
             return
-        }
-        // h0(LayoutInflater, ViewGroup) 是真正造卡片的方法；v() 只是桥接到它。
-        val target = binder.declaredMethods.firstOrNull {
-            it.name == "h0" &&
-                it.parameterTypes.size == 2 &&
-                it.parameterTypes[0] == layoutInflaterType &&
-                it.parameterTypes[1] == viewGroupType
-        }
-        if (target == null) {
-            hooks.reportLoss(id, "h0(LayoutInflater, ViewGroup) not found")
-            return
-        }
-        target.isAccessible = true
-
-        val seen = java.util.concurrent.atomic.AtomicBoolean()
-        hooks.install(id, target) { chain ->
-            // 先让宿主按原样造出真正的 InnerAdViewHolder——它内部要 findViewById 绑定
-            // 一堆控件，绕过去必然崩。造好之后再把这个 holder 的 itemView 压成 0×0 不可见，
-            // 效果就是"卡片存在但不占空间"，列表结构完全合法。
-            val holder = chain.proceed()
-            runCatching {
-                val itemView = holder?.javaClass
-                    ?.getField("itemView")
-                    ?.get(holder) as? View
-                if (itemView != null) {
-                    itemView.layoutParams = ViewGroup.LayoutParams(0, 0)
-                    itemView.visibility = View.GONE
-                    if (seen.compareAndSet(false, true)) log.info("collapsed inner ad card (0x0, gone)")
-                }
-            }
-            holder
         }
 
-        // 绑定时再压一次。
-        //
-        // onCreateViewHolder 只在首次创建时走，而 onBindViewHolder 每次滚进可视区都会走。
-        // 如果宿主在绑定里重置了 layoutParams，上面那次压缩就白做了——卡片会照常显示。
-        // 两处都压才能保证它一直不占空间。
-        val bind = binder.declaredMethods.firstOrNull {
-            it.name == "g0" && it.parameterTypes.size == 2
-        }
-        if (bind == null) {
-            hooks.reportLoss("$id.bind", "g0(holder, bean) not found")
-            return
-        }
-        bind.isAccessible = true
-        hooks.install("$id.bind", bind, requireVoid = true) { chain ->
-            val result = chain.proceed()
-            runCatching {
-                val holder = chain.args[0]
-                val itemView = holder?.javaClass?.getField("itemView")?.get(holder) as? View
-                if (itemView != null) {
-                    itemView.layoutParams = ViewGroup.LayoutParams(0, 0)
-                    itemView.visibility = View.GONE
-                }
+        // 推荐流里有**两个**广告 binder，都要拦：
+        //   binder.c  Compete·GDT 广告（红果免费短剧、快手极速版这类）
+        //   binder.d  Inner·会员推广（「免费领酷狗音乐VIP」「42天畅听卡」）
+        // 它们都继承自 wz.k，各自有 h0(inflater, parent) 造卡、g0(holder, bean) 绑定。
+        // 只拦 d 的时候 c 渲染的卡照样露出来——实测踩过一次。
+        var installed = 0
+        for (binderName in INNER_AD_BINDERS) {
+            val binder = resolver.findClass(binderName) ?: run {
+                hooks.reportLoss("ad.innerCard.block[$binderName]", "binder missing")
+                continue
             }
-            result
+            val tag = binderName.substringAfterLast('.')
+
+            val create = binder.declaredMethods.firstOrNull {
+                it.name == "h0" &&
+                    it.parameterTypes.size == 2 &&
+                    it.parameterTypes[0] == layoutInflaterType &&
+                    it.parameterTypes[1] == viewGroupType
+            }
+            if (create == null) {
+                hooks.reportLoss("ad.innerCard.create.$tag", "h0(LayoutInflater, ViewGroup) not found")
+                continue
+            }
+            create.isAccessible = true
+            val seen = java.util.concurrent.atomic.AtomicBoolean()
+            hooks.install("ad.innerCard.create.$tag", create) { chain ->
+                // 先让宿主按原样造出真正的 holder——它内部要 findViewById 绑定一堆控件，
+                // 绕过去必然崩。造好再把 itemView 压成 0×0 且不可见。
+                val holder = chain.proceed()
+                collapse(holder, seen, "create/$tag")
+                holder
+            }
+            installed++
+
+            // 绑定时再压一次：onCreateViewHolder 只在首次创建时走，onBindViewHolder
+            // 每次滚进可视区都会走。宿主可能在绑定里重置 LayoutParams，只压一处会被覆盖。
+            val bind = binder.declaredMethods.firstOrNull {
+                it.name == "g0" && it.parameterTypes.size == 2
+            }
+            if (bind == null) {
+                hooks.reportLoss("ad.innerCard.bind.$tag", "g0(holder, bean) not found")
+                continue
+            }
+            bind.isAccessible = true
+            hooks.install("ad.innerCard.bind.$tag", bind, requireVoid = true) { chain ->
+                val result = chain.proceed()
+                collapse(chain.args.getOrNull(0), null, null)
+                result
+            }
+            installed++
+        }
+
+        if (installed == 0) hooks.reportLoss("ad.innerCard.block", "no ad binder hooked")
+    }
+
+    /** 把 holder 的 itemView 压成 0×0 并隐藏；直接改 View 树，不碰列表结构。 */
+    private fun collapse(holder: Any?, seen: java.util.concurrent.atomic.AtomicBoolean?, label: String?) {
+        runCatching {
+            val itemView = holder?.javaClass?.getField("itemView")?.get(holder) as? View ?: return
+            itemView.layoutParams = ViewGroup.LayoutParams(0, 0)
+            itemView.visibility = View.GONE
+            if (seen != null && label != null && seen.compareAndSet(false, true)) {
+                log.info("collapsed inner ad card ($label)")
+            }
         }
     }
 

@@ -115,10 +115,11 @@ com.kugou.android.app.boot.SplashCard.A0(...)
 
 连续三次冷启动：每次 `splash.gate.content` 命中 3 次，1.5 秒内进入首页，无白屏、无卡启动。
 
-## 推荐流内嵌推广卡（待验证）
+## 推荐流内嵌推广卡
 
-推荐流里出现过三种形态完全不同的推广卡： 「快手极速版」1 元秒杀、「免费领酷狗音乐 VIP」
-酷狗×元宝联名、「42 天畅听卡」邀请好友。它们**共用同一套容器控件**，UI dump 三次一致：
+推荐流里出现过四种形态完全不同的推广卡：「红果免费短剧」「快手极速版」1 元秒杀、
+「免费领酷狗音乐 VIP」酷狗×元宝联名、「42 天畅听卡」邀请好友。它们**共用同一套容器控件**，
+UI dump 四次一致：
 
 | 控件 | 资源 | 作用 |
 |---|---|---|
@@ -129,33 +130,39 @@ com.kugou.android.app.boot.SplashCard.A0(...)
 
 这组 ID **在整套 `com.kugou.android.app.newtingtab` 源码里搜不到**，也不在任何布局文件中
 （按小端 uint32 扫过全部 20,363 个 `res/*.xml`），说明卡片由别的模块通过 binder 注册进来。
+祖先链显示卡片是被直接塞进 `android:id/list`（RecyclerView）的，中间没有业务容器。
 
 因此先前那条「按 bean 类名 / `module` 字段过滤」的规则拦不到它们：`ad.add.filter`
 在一次启动里命中 1800 次，却一次 `blocked ad bean` 都没有。
 
 **定位方式**：在 `LayoutInflater.inflate` 上挂探针，inflate 结束后检查结果树里有没有
-上述标志控件。抓到调用栈：
+上述标志控件。**两次抓到的是两个不同的 binder**：
 
 ```
-com.kugou.android.app.newtingtab.mc.onCreateViewHolder
-  → tv.e.onCreateViewHolder
-  → com.kugou.android.app.newtingtab.binder.d.v
-  → com.kugou.android.app.newtingtab.binder.d.h0
+mc.onCreateViewHolder → tv.e → binder.d.v → binder.d.h0    (layout 0x7f0d1101，会员推广)
+mc.onCreateViewHolder → tv.e → binder.c.v → binder.c.h0    (layout 0x7f0d1100，GDT 竞品广告)
 ```
 
-`binder.d` 确认是**纯广告 binder**：实现 `KG11InnerAdCardManager$InnerAdLoadFinishCallback`，
-`h0()` 唯一职责是 `inflate(2131562753)` 再 `new InnerAdViewHolder(...)`，三个产出 bean 的
-方法 `j0`/`c0`/`f0` 全部 `return 0`。
+两者相邻、同构（都继承 `wz.k`），卡片布局 id 也相邻（`2131562753` / `2131562752`），
+是同一批生成的兄弟类。**只拦 `d` 的时候 `c` 渲染的卡照样露出来——实测踩过一次。**
 
-**做法**：让 `h0()` 正常造出真正的 holder（绕过去必然崩，它内部要 `findViewById` 绑定一堆
-控件），拿到后把 `itemView` 压成 0×0 并 `GONE`；同时在 `g0(holder, bean)` 绑定时再压一次——
-`onCreateViewHolder` 只在首次创建时走，`onBindViewHolder` 每次滚进可视区都走，
-只压一处的话宿主可能重新设置 LayoutParams 把卡片放回来。
+`c` 还有三个 inflate 分支（`b0`/`c0`/`a0`，分别对应 TME 多广告、任务中心、竞品卡），
+按服务端下发的广告类型三选一，所以不能只拦某一个分支，要在 `h0` 这个总入口拦。
 
-**验证状态：规则已安装（`hooks installed=26 skipped=0`），但尚未观测到实际命中。**
-冷启动后日志里没有出现 `collapsed inner ad card`，当时也没有广告卡出现在推荐流，
-无法区分是规则生效还是服务端未下发。**在拿到一次「广告出现 → 卡片没显示 → 日志有
-`collapsed` 」的完整观察之前，这条不算已验证。**
+**做法**：`c` 和 `d` 各自的 `h0()`（造卡）与 `g0()`（绑定）都挂上。`h0` 里让宿主正常造出
+真正的 holder（绕过去必然崩，它内部要 `findViewById` 绑定一堆控件），拿到后把 `itemView`
+压成 0×0 且 `GONE`；`g0` 绑定时再压一次——`onCreateViewHolder` 只在首次创建时走，
+`onBindViewHolder` 每次滚进可视区都走，只压一处的话宿主可能重设 LayoutParams 把卡片放回来。
+
+**验证结果**：`hooks installed=28 skipped=0`，冷启动即命中：
+
+```
+hook hit[1]: ad.innerCard.create.d
+hook hit[1]: ad.innerCard.bind.d
+collapsed inner ad card (create/d)
+```
+
+界面确认卡片不再出现，推荐流正常滚动、无空白卡、无崩溃。
 
 ## 复验方法
 

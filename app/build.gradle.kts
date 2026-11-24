@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.daititii.kugouhook"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.1.3"
 
         // 宿主 base.apk 的 .so 全在 arm64-v8a 下，32 位设备根本装不上宿主，
         // 因此只需要打包这一个 ABI —— 多打只会白白增大体积。

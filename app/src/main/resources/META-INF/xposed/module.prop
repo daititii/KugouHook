@@ -1,7 +1,7 @@
 id=KugouHook
 name=酷狗音乐 去广告
-version=v0.1.2
-versionCode=3
+version=v0.1.3
+versionCode=4
 author=KugouHook
 description=酷狗音乐 (com.kugou.android) 去广告模块。在数据层拦截推荐流广告（InnerAdBean / CompeteAdBean）与「我的」页动态 banner，并阻断开屏运营推广广告；不修改布局、不轮询 View 树，因此对流畅度无影响。宿主升级后逐条降级：某个目标找不到只会跳过它并写进日志，其余照常生效。
 minApiVersion=102
