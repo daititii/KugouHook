@@ -21,8 +21,8 @@ LSPosed 模块，目标进程 `com.kugou.android` 主进程。只做**界面层*
 | SDK 工具 | `G:\Android_SDK\build-tools\36.1.0`、`G:\Android_SDK\platform-tools\adb.exe` |
 | 冷启动 | `adb -s 1b862d7c shell 'am force-stop com.kugou.android && am start -W -n com.kugou.android/.app.splash.SplashActivity'` |
 
-本机内存 16 GB。JADX 图形界面自身可占到 4.8 GB（`-XX:MaxRAMPercentage=70.0`），
-**跑后台反编译前必须先关它**，否则系统会因交换空间被打满而整体卡死。
+本机内存 16 GB。**JADX 已弃用**，反编译一律走 rust_ASC（见下文），不再有"跑后台任务前
+先关图形界面"这类约束。
 
 ## 动代码前必须知道的三件事
 
@@ -72,30 +72,57 @@ LSPosed 模块，目标进程 `com.kugou.android` 主进程。只做**界面层*
 改名等于换一个模块：用户必须先禁用旧包再启用新包。Kotlin 包名
 `dev.kugou.kugouhook`、`java_init.list` 入口、R8 规则、作用域 `com.kugou.android` 与之无关，不要跟着改。
 
-## 逆向工具（JADX）
+## 逆向工具：优先用 rust_ASC，不要用 JADX
 
-宿主 APK：`G:\hook_test\kugou-20649-base.apk`（169 MB，29 个 dex，**233,900 个类**）。
+宿主 APK：`G:\hook_test\kugou-20649-base.apk`（161 MB，29 个 dex，**233,727 个类**）。
 
-**禁止的三类操作**（会把 JADX 索引线程打满，导致用户整机卡死）：
+**[rust_ASC](https://github.com/MG1937/rust_ASC) 是首选工具**，可执行文件在
+`G:\hook_test\_ref\rust_ASC\rust_ASC.exe`。无状态、不建索引、不落盘缓存，直接 mmap APK
+跨 dex 并行扫描，内存峰值几百 MB。已作为 MCP server 接入（工具前缀 `rust_ASC`）。
 
-1. 整包 `aapt2 dump resources`
-2. `search_in=code` 的全量代码搜索
-3. 无分页地拉取整份 AndroidManifest（单次 445 KB）
+本机实测（就是这个 APK）：
 
-只允许：类名索引搜索（毫秒级）、单个类源码读取、单个方法读取。**一次只发一个重查询，
-超时就停，不并行、不自动重试。**
+| 操作 | 耗时 |
+|---|---|
+| `listclass --prefix yk0` | 0.47 s |
+| `getclass yk0.g` | 0.6 s |
+| 全量 `export`（233,727 个类，715 MB） | **150 s** |
 
-需要按逻辑全文检索时，走离线导出而不是查图形界面：
+对照：同一份 APK 用 JADX 全量导出跑了 46 分钟，到 72%（43,873/60,686）就正常退出，
+漏掉 10/20 个本模块实际用到的宿主类（`yk0.g`、`newtingtab.mc`、`version.upgrade.b` 全缺），
+且 `resources/` 因命令带 `-r` 为空。**JADX 在本项目里已经没有使用价值。**
 
 ```powershell
-# 必须先用 CloseMainWindow 关掉 JADX GUI，再跑
-& 'D:\jdk21\bin\java.exe' -Xmx9g -XX:+UseParallelGC `
-  -cp 'G:\jadx\lib\jadx-gui-1.5.7-all.jar' jadx.cli.JadxCLI `
-  -r -j 6 --no-debug-info -d G:\hook_test\kugou-20649-src `
-  G:\hook_test\kugou-20649-base.apk
+$exe = 'G:\hook_test\_ref\rust_ASC\rust_ASC.exe'
+$apk = 'G:\hook_test\kugou-20649-base.apk'
+
+# 按界面文案直接找代码引用点——这是最常用的入口，比猜类名快一个数量级
+& $exe findrefs $apk string "免费领会员"
+
+# 按类型 / 方法 / 字段 / 继承关系查
+& $exe findrefs $apk type com.kugou.version.upgrade.IVersionUpgrade
+& $exe findrefs $apk impl com.kugou.version.upgrade.IVersionUpgrade
+& $exe findrefs $apk method k --class com.kugou.version.upgrade.b
+
+# 单类反编译 / 列类 / 列方法 / 列字符串池 / 解清单
+& $exe getclass $apk yk0.g
+& $exe listclass --prefix com.kugou.android.app.newtingtab $apk
+& $exe listmethod --class com.kugou.version.upgrade.b $apk
+& $exe liststring -f 会员 $apk
+& $exe getmanifest $apk
+
+# 全量导出（需要全文 grep 时用，8 线程约 150 s）
+& $exe export --thread 8 $apk G:\hook_test\kugou-20649-asc
 ```
 
-`-Xmx4g` 会在 `load()` 阶段 OOM（已实测），不要用。
+全量导出在 `G:\hook_test\kugou-20649-asc`（233,727 个 `.java`），可以放心 grep。
+
+**JADX 图形界面不再需要**。它自身可占到 4.8 GB（`-XX:MaxRAMPercentage=70.0`），
+历史上多次把整机拖到卡死——那个时代结束了。下面几条留作记录，说明为什么放弃它：
+
+1. 整包 `aapt2 dump resources`、`search_in=code` 全量搜索、无分页拉 Manifest 都会打满索引线程
+2. `-Xmx4g` 在 `load()` 阶段 OOM；`-Xmx9g` 能跑但容易和图形界面抢内存
+3. 按 dex 拆分导出会产出跨 dex 引用断裂的废码（实测 2,795 个文件全是空壳）
 
 ## 已确认的逆向事实
 
@@ -119,8 +146,12 @@ LSPosed 模块，目标进程 `com.kugou.android` 主进程。只做**界面层*
 1. 写 `cache/kugouhook.flags` 内容 `ui.probe=1`，冷启动。
 2. `UiProbeHooks` 会 hook `Dialog.show`、`PopupWindow.showAtLocation`、`SurfaceView` 构造，
    命中时打印**去掉系统帧的调用栈**——宿主自己的类名和调用链直接出现在日志里。
-3. 按日志里的类名做单类反编译（见下），确认该拦哪一处。
-4. 拦完用截图验证，**不要用"日志有 hit"当作成功**。
+3. 按日志里的类名做单类反编译（`rust_ASC getclass`），确认该拦哪一处。
+4. 拦完在界面上肉眼确认，**不要用"日志有 hit"当作成功**。
+
+反过来也成立：**如果你已经知道界面上的文案，先试 `findrefs string "<文案>"`。**
+「免费领会员」就是这么一步定位的——直接拿到 `Lcom/kugou/framework/statistics/easytrace/b;-><clinit>`，
+展开看完整串是「试听弹窗-免费领会员入口」，说明那是埋点 key，不是页面文案。
 
 这一步能省掉几轮"猜错→重编译→装机→没命中"的循环。
 
