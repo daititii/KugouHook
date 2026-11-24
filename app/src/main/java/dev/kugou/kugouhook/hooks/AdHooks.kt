@@ -1,5 +1,7 @@
 package dev.kugou.kugouhook.hooks
 
+import android.view.View
+import android.view.ViewGroup
 import dev.kugou.kugouhook.ClassResolver
 import dev.kugou.kugouhook.HookManager
 import dev.kugou.kugouhook.ModuleLog
@@ -40,16 +42,123 @@ class AdHooks(
         const val ADAPTER_DATA_FIELD = "r"
         const val COW_LIST = "java.util.concurrent.CopyOnWriteArrayList"
 
+        /** 推荐流里专门的广告 binder：只负责造广告卡，三个产出 bean 的方法恒返回 0。 */
+        const val INNER_AD_BINDER = "com.kugou.android.app.newtingtab.binder.d"
+
         /** 广告 bean 的 module 串特征（服务端下发，抗混淆）。 */
         const val AD_MODULE_MARK = "_ad"
 
         /** 广告 bean 的类名特征。 */
         const val AD_CLASS_MARK = "AdBean"
+
+        /** 观测用：已记录过的 bean 类型，避免刷屏。 */
+        val seenKinds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+        const val MAX_KINDS = 40
     }
 
     fun install() {
         installAddFilter()
         installAddAllFilter()
+        installInnerAdCardBlock()
+    }
+
+    /**
+     * 推荐流里的「运营推广/会员推广」广告卡。
+     *
+     * ## 这类卡片为什么躲过了前面两条规则
+     *
+     * 它们不走 `CopyOnWriteArrayList.add`，而是由 `binder.d` 这个 **专门的广告 binder**
+     * 直接 inflate 出 ViewHolder 塞给 RecyclerView。`binder.d` 实现
+     * `KG11InnerAdCardManager$InnerAdLoadFinishCallback`，`h0()` 的唯一职责就是
+     * `inflate(2131562753)` 再 `new InnerAdViewHolder(...)`，三个产出 bean 的方法
+     * (`j0`/`c0`/`f0`) 全部 `return 0`。所以它是纯广告 binder，拦它不会误伤正常卡片。
+     *
+     * ## 怎么确认的
+     *
+     * 三张形态完全不同的卡（「快手极速版」1 元秒杀、「免费领酷狗音乐VIP」元宝联名、
+     * 「42天畅听卡」邀请好友）用的是同一套容器控件 `giw0`/`giw1`/`giz0`/`gj21`。
+     * 在 `LayoutInflater.inflate` 上挂探针，按这些标志控件识别，直接抓到调用栈：
+     *
+     *     mc.onCreateViewHolder → tv.e.onCreateViewHolder → binder.d.v → binder.d.h0
+     *
+     * ## 为什么返回空 ViewHolder 而不是 null
+     *
+     * `onCreateViewHolder` 返回 null 会让 RecyclerView 在 `tryGetViewHolderForPosition`
+     * 之后立刻 NPE。这里构造一个 0×0 的空 View，宿主拿到的是"存在但看不见"的 holder，
+     * 布局流程照常走完，只是不占空间。
+     *
+     * 只影响展示：不改变广告请求、不影响推荐流其它卡片、不碰任何会员或播放逻辑。
+     */
+    private fun installInnerAdCardBlock() {
+        val id = "ad.innerCard.block"
+        val binder = resolver.findClass(INNER_AD_BINDER) ?: run {
+            hooks.reportLoss(id, "inner ad binder missing")
+            return
+        }
+        val inflater = resolver.findClass("android.view.LayoutInflater")
+        val layoutInflaterType = runCatching { Class.forName("android.view.LayoutInflater") }.getOrNull()
+        val viewGroupType = runCatching { Class.forName("android.view.ViewGroup") }.getOrNull()
+        if (layoutInflaterType == null || viewGroupType == null) {
+            hooks.reportLoss(id, "inflater types unavailable")
+            return
+        }
+        // h0(LayoutInflater, ViewGroup) 是真正造卡片的方法；v() 只是桥接到它。
+        val target = binder.declaredMethods.firstOrNull {
+            it.name == "h0" &&
+                it.parameterTypes.size == 2 &&
+                it.parameterTypes[0] == layoutInflaterType &&
+                it.parameterTypes[1] == viewGroupType
+        }
+        if (target == null) {
+            hooks.reportLoss(id, "h0(LayoutInflater, ViewGroup) not found")
+            return
+        }
+        target.isAccessible = true
+
+        val seen = java.util.concurrent.atomic.AtomicBoolean()
+        hooks.install(id, target) { chain ->
+            // 先让宿主按原样造出真正的 InnerAdViewHolder——它内部要 findViewById 绑定
+            // 一堆控件，绕过去必然崩。造好之后再把这个 holder 的 itemView 压成 0×0 不可见，
+            // 效果就是"卡片存在但不占空间"，列表结构完全合法。
+            val holder = chain.proceed()
+            runCatching {
+                val itemView = holder?.javaClass
+                    ?.getField("itemView")
+                    ?.get(holder) as? View
+                if (itemView != null) {
+                    itemView.layoutParams = ViewGroup.LayoutParams(0, 0)
+                    itemView.visibility = View.GONE
+                    if (seen.compareAndSet(false, true)) log.info("collapsed inner ad card (0x0, gone)")
+                }
+            }
+            holder
+        }
+
+        // 绑定时再压一次。
+        //
+        // onCreateViewHolder 只在首次创建时走，而 onBindViewHolder 每次滚进可视区都会走。
+        // 如果宿主在绑定里重置了 layoutParams，上面那次压缩就白做了——卡片会照常显示。
+        // 两处都压才能保证它一直不占空间。
+        val bind = binder.declaredMethods.firstOrNull {
+            it.name == "g0" && it.parameterTypes.size == 2
+        }
+        if (bind == null) {
+            hooks.reportLoss("$id.bind", "g0(holder, bean) not found")
+            return
+        }
+        bind.isAccessible = true
+        hooks.install("$id.bind", bind, requireVoid = true) { chain ->
+            val result = chain.proceed()
+            runCatching {
+                val holder = chain.args[0]
+                val itemView = holder?.javaClass?.getField("itemView")?.get(holder) as? View
+                if (itemView != null) {
+                    itemView.layoutParams = ViewGroup.LayoutParams(0, 0)
+                    itemView.visibility = View.GONE
+                }
+            }
+            result
+        }
     }
 
     /**
@@ -75,6 +184,18 @@ class AdHooks(
 
         hooks.installBooleanFilter("ad.add.filter", addOne) { args ->
             val bean = args.firstOrNull()
+            if (bean != null && looksLikeFeedList(args)) {
+                // 观测：把推荐流里实际进列表的 bean 类型和 module 记下来（每种只记一次）。
+                // 广告判定漏掉某一类时，这条日志直接告诉你它长什么样，不用再猜。
+                val key = bean.javaClass.simpleName
+                if (seenKinds.size < MAX_KINDS && seenKinds.add(key)) {
+                    val module = runCatching {
+                        val f = bean.javaClass.findFieldUpTo(8) { it.name == "module" }
+                        f?.apply { isAccessible = true }?.get(bean) as? String
+                    }.getOrNull()
+                    log.info("feed bean: $key module=${module ?: "-"} ad=${isAdBean(bean)}")
+                }
+            }
             if (bean != null && isAdBean(bean) && looksLikeFeedList(args)) {
                 log.info("blocked ad bean: ${bean.javaClass.simpleName}")
                 true

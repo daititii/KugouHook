@@ -138,6 +138,17 @@ $apk = 'G:\hook_test\kugou-20649-base.apk'
   `raise(SIGSEGV)`。`Java.enumerateLoadedClassesSync()` 在 23 万类上要 13 秒。
 - `com.kugou.snow.LooperThreadThief.snowLoop` 会抢主 Looper，任何依赖主线程时序的设计都不稳。
 - 不要往子进程（`:support`、`:message`）注 hook，没有收益只有风险。
+- **没有统一的广告拦截点。** `q8.d` 的构造函数登记了 19 个广告位名，是目前最可靠的
+  "还有哪些位置"参照；19 个位的数据结构、绑定时机各不相同，只能逐条处理。
+  两条看起来"一处拦全部"的路都验证过不可行，原因见
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的「广告位总表」一节。
+- **付费推广层是 SSR H5，不是原生页面。** 点击 VIP 歌曲弹出的「会员专属歌曲，付费享
+  上亿曲库」底部弹层，地址写死在 `FeeFrontInterceptDialogUtils` 里
+  （`https://gateway.kugou.com/ssr_vippopup/intercept`），所以整包搜不到那句文案——
+  文案由服务端下发。拦的是 `FeeFrontInterceptDialogUtils$a#run()` 直接返回。
+- **`%1$s` 这类带占位符的文案是资源，不是代码常量。** `findrefs string` 找不到时，
+  按 `aapt2 dump strings` → `aapt2 dump resources` 的顺序反查资源名，再用
+  `layout/xxx` 反查布局。资源 ID 在 axml 里是小端 uint32，直接按字节搜比调 aapt2 快得多。
 
 ## 定位方法：先观测，再拦截
 

@@ -160,6 +160,52 @@ app/src/main/java/dev/kugou/kugouhook/
 队列横幅同理：`dyt0` 是队列内容容器，隐藏它会连歌曲列表一起消失；
 真正要隐藏的是专用的 `e0`，通过 `QueueListSlidingLayout#I0(boolean)` 定位。
 
+## 广告位总表：19 个位置名
+
+这 19 个字符串来自 `q8.d`（`com.kugou.android.ads.ownads`）的构造函数，是宿主自己
+登记的广告位清单。它是目前最可靠的"还有哪些位置"参照，比翻代码猜要准确。
+
+定位方式：`rust_ASC getclass app.apk q8.d`，看私有构造里的 `this.g("...")` 序列。
+
+### 覆盖状态
+
+| 位置名 | 中文含义 | 模块状态 |
+|---|---|---|
+| `home_card` | 首页推荐流卡片 | ✅ AdHooks 数据层过滤 |
+| `mine_page_top_banner` | 「我的」页顶部 banner | ✅ MineBannerHooks |
+| `home_userinfo_bar` | 推荐页运营推广位 | ✅ VipPromptHooks（按槽位判断） |
+| `search_banner` | 搜索首页 banner | ✅ VipPromptHooks |
+| `mobile_live` | 播放页 live 卡片 | ✅ 间接覆盖 |
+| `home_mstc_icon` | 首页动态图标 | ⚠️ 未验证 |
+| `home_op_list` | 首页歌单位 | ⚠️ 未验证 |
+| `mine_page_under_tab_banner` | 「我的」页 tab 下 banner | ⚠️ 未验证 |
+| `task_center_entrance` | 任务中心入口 | ⚠️ 未验证 |
+| `multi_page_pendant` | 多页挂件 | ❌ 未处理 |
+| `multi_page_pendant_playbar_pet` | 播放栏宠物挂件 | ❌ 未处理 |
+| `play_banner` | 播放页横幅 | ❌ 未处理 |
+| `playpage_link` | 播放页链接卡 | ❌ 未处理 |
+| `play_card` | 播放页卡片 | ❌ 未处理 |
+| `play_top_bubble` | 播放页顶部气泡 | ❌ 未处理 |
+| `comment_flow` | 评论流广告 | ❌ 未处理 |
+| `singer_page_banner` | 歌手页 banner | ❌ 未处理 |
+| `mobile_window` | 全屏弹窗广告 | ❌ 未处理 |
+| `mobile_bottom_tab` | 底部 tab 广告 | ❌ 未处理 |
+
+### 请求侧：不要在这些地方拦
+
+排查时评估过两条"一处拦全部"的思路，**都不成立**，记在这里避免以后重走：
+
+1. **`h8.a`（广告请求构造器）** —— 30 个方法各返回一个 `retrofit2.Call`。在这里返回
+   失败或 null，宿主拿到的是"请求失败"而不是"没有广告"，界面会留空白占位甚至崩，
+   与 `AdHooks` 头注释里那次"布局中途改列表"属于同类错误。
+2. **`q8.d.i(posName)`（`own_ads` 字段）** —— 一开始误以为它声明"我要哪些广告位"，
+   读 `q8.e#b`/`c` 才发现它是**上报曝光/点击/关闭次数**的统计结构
+   （`count` / `total_count` / `click` / `close`）。清空它只会让服务端认为这些位从未
+   曝光过，可能触发更频繁的推送。**效果与预期相反。**
+
+结论：20.6.4 没有统一的广告拦截点。每个位的 bean 类型、绑定时机、生命周期都不同，
+只能逐条处理。新增一位时，先用 `UiProbeHooks` 观测它由谁触发，再决定拦在数据层还是呈现层。
+
 ## ApkVersion：为什么手写 AXML 解析
 
 `onPackageReady` 阶段 Application 对象还不存在，拿不到 Context，而且

@@ -322,6 +322,36 @@ class VipPromptHooks(
         }
     }
 
+    /**
+     * 点击 VIP 歌曲后弹出的付费推广层（「会员专属歌曲，付费享上亿曲库」那个底部弹层）。
+     *
+     * ## 这个弹层是什么
+     *
+     * 它不是一个原生页面，是 SSR H5：`FeeFrontInterceptDialogUtils` 里写死了兜底地址
+     * `https://gateway.kugou.com/ssr_vippopup/intercept`。所以整包里搜「付费享上亿曲库」
+     * 搜不到——文案是服务端下发的，本地只有 URL。这也是为什么先按文案反查一直落空。
+     *
+     * ## 之前的规则为什么没生效
+     *
+     * `FeeFrontInterceptDialogUtils$a#run()` 有两条互斥分支：
+     *
+     *     if (!d.equals("...FeeInterceptWebActivity")) {
+     *         e.putExtra("clazz", d);
+     *         e.setAction("com.kugou.android.start_vip");
+     *         f.sendBroadcast(e);          // ← 发广播，由别处接收后再起页面
+     *     } else {
+     *         ... kh5.s1.X(...)            // ← 直接起 WebActivity
+     *     }
+     *
+     * 旧规则只在 `d == FeeInterceptWebActivity`（else 分支）时才拦，而实际点击 VIP 歌曲
+     * 走的是**广播分支**，所以条件永远不成立。日志里 `origin` 和 `run` 成对命中、
+     * 却从没出现过 `suppressed`，就是这个原因。
+     *
+     * ## 现在的做法
+     *
+     * 两条分支一起拦：`run()` 直接返回，弹层不再展示。这只是不展示购买页，
+     * 不改变会员状态、不影响试听，用户仍可从会员中心自行购买。
+     */
     private fun installPlaybackPurchasePrompt() {
         val id = "vip.ui.playbackPurchasePrompt"
         val utilsName = "com.kugou.framework.musicfees.feefront.FeeFrontInterceptDialogUtils"
@@ -332,33 +362,32 @@ class VipPromptHooks(
         val entity = resolver.findClass("com.kugou.framework.musicfees.feefront.FeeFrontInterceptDialogEntity")
         val options = resolver.findClass("com.kugou.framework.musicfees.feefront.FeeFrontTingThreeEntity")
         val target = runner?.let { field(it, "d") }?.takeIf { it.type == String::class.java }
-        val model = runner?.let { field(it, "h") }?.takeIf { it.type == entity }
         val run = runner?.let { exactVoid(it, "run") }
         if (utils == null || cart == null || policy == null || entity == null || options == null ||
-            target == null || model == null || run == null) {
+            target == null || run == null) {
             hooks.reportLoss(id, "playback popup presentation not found")
             return
         }
-        val playbackRequests = Collections.synchronizedMap(WeakHashMap<Any, Unit>())
+
+        // 保留落点观测：第一次命中时把 target 打出来，以后版本漂移了能立刻看出走的是哪条分支。
         val capture = exactMethod(utils, Boolean::class.javaPrimitiveType!!, "V", cart, policy, entity, options)
         hooks.install("$id.origin", capture) { chain ->
-            val request = chain.args[2]
-            // The renderer may run later on the main thread; attribute it before the runnable is posted.
-            if (request != null && Thread.currentThread().stackTrace.any {
-                    it.className == "com.kugou.framework.musicfees.r0" && it.methodName == "v0"
-                }) {
-                playbackRequests[request] = Unit
-            }
             chain.proceed()
-        } ?: return
-        val seen = AtomicBoolean()
+        }
+
+        val seenBroadcast = AtomicBoolean()
+        val seenActivity = AtomicBoolean()
         hooks.install(id, run, requireVoid = true) { chain ->
-            val request = model.get(chain.thisObject)
-            if (target.get(chain.thisObject) == FEE_INTERCEPT_ACTIVITY && request != null &&
-                playbackRequests.containsKey(request)) {
-                if (seen.compareAndSet(false, true)) log.info("suppressed automatic playback purchase prompt")
-                null
-            } else chain.proceed()
+            val where = runCatching { target.get(chain.thisObject) as? String }.getOrNull().orEmpty()
+            val viaActivity = where == FEE_INTERCEPT_ACTIVITY
+            val flag = if (viaActivity) seenActivity else seenBroadcast
+            if (flag.compareAndSet(false, true)) {
+                log.info(
+                    "suppressed playback purchase prompt " +
+                        "(via=${if (viaActivity) "activity" else "broadcast"}, target=$where)"
+                )
+            }
+            null
         }
     }
 

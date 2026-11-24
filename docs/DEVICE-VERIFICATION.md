@@ -48,6 +48,42 @@
   修法不扩词表，而是认定该槽位本身就是运营推广位：只要 tag 是这个 bean 且文案非空就隐藏。
   三次冷启动各命中一次（`suppressed home operation promo text=[免费领会员]`），规则 `skipped=0`。
 - 购买弹窗和试听提示：搜索周杰伦并点《晴天》，旧版打开购买页，修订版命中 `suppressed automatic playback purchase prompt` 和 `hidden mini-player VIP prompt`，仍进入原有试听流程。未验证所有试听文案、时长或播放入口。
+
+## 点击 VIP 歌曲弹出的付费推广层
+
+界面文本是「会员专属歌曲，付费享上亿曲库」，形态是**底部弹层**，内含领取 1 天卡、
+豪华 VIP 月/季/年卡和微信/支付宝支付。
+
+**它不是原生页面。** 整包搜不到这句文案的原因：它是 SSR H5 页面，地址写死在
+`FeeFrontInterceptDialogUtils` 里的兜底值 `https://gateway.kugou.com/ssr_vippopup/intercept`，
+文案由服务端下发。因此先前按 `aapt2 dump strings` 和 `res/a/*.xml` 反查全部落空是正常的，
+不是查错了。
+
+**旧规则为什么没拦住。** `FeeFrontInterceptDialogUtils$a#run()` 里首行就分流：
+
+```java
+if (!this.d.equals("...FeeInterceptWebActivity")) {
+    e.putExtra("clazz", d); e.setAction("com.kugou.android.start_vip"); f.sendBroadcast(e);
+} else { ... kh5.s1.X(...) }
+```
+
+旧规则只在 `d == FeeInterceptWebActivity` 时短路，**还额外要求请求对象出现在
+`r0.v0` 的调用栈里**——那个约束本意是"只拦自动弹窗"。手动点 VIP 歌曲时调用栈里没有
+`r0.v0`，条件恒为 false。
+
+诊断依据不是猜的：日志里 `vip.ui.playbackPurchasePrompt.origin` 与
+`vip.ui.playbackPurchasePrompt` **成对命中，却从未出现 `suppressed`**。
+"钩子命中了但没生效"直接指向条件判断，而不是 hook 点选错。
+
+**现在的做法**：`run()` 无条件返回，两条分支一起拦。实测日志：
+
+```
+suppressed playback purchase prompt (via=activity, target=...FeeInterceptWebActivity)
+```
+
+界面确认：点 VIP 歌曲不再弹出购买页。这只影响展示，不改会员状态、不影响试听，
+用户仍可从会员中心自行开通。
+
 - 播放队列：旧版出现「含14首会员歌曲，看广告可免费听」和「立即观看」；最终版两者同时消失，来源栏和歌曲列表仍在，命中 `hidden queue VIP banner`。只隐藏专用促销控件，不隐藏队列外层。其他共享歌单横幅的开会员文案未单独在真机复现。
 
 ## 运营开屏广告（「运营推广」全屏卡片）
@@ -78,6 +114,48 @@ com.kugou.android.app.boot.SplashCard.A0(...)
 最终方案：`yk0.g#e(SplashV4)` 恒返回 false。装配入口 `BaseSplashUnitAgent#e0` 里的 `z16` 因此为 false，跳过全部广告图层装配，而 `SplashCard` 仍照常创建并 `setContentView`。
 
 连续三次冷启动：每次 `splash.gate.content` 命中 3 次，1.5 秒内进入首页，无白屏、无卡启动。
+
+## 推荐流内嵌推广卡（待验证）
+
+推荐流里出现过三种形态完全不同的推广卡： 「快手极速版」1 元秒杀、「免费领酷狗音乐 VIP」
+酷狗×元宝联名、「42 天畅听卡」邀请好友。它们**共用同一套容器控件**，UI dump 三次一致：
+
+| 控件 | 资源 | 作用 |
+|---|---|---|
+| `giw0` | `0x7f0acb5a` | 标题栏 |
+| `gj21` | `0x7f0acb67` | 标题文字 |
+| `giz0` | `0x7f0acb60` | 关闭按钮 |
+| `giw1` | `0x7f0acb5b` | 图片区 |
+
+这组 ID **在整套 `com.kugou.android.app.newtingtab` 源码里搜不到**，也不在任何布局文件中
+（按小端 uint32 扫过全部 20,363 个 `res/*.xml`），说明卡片由别的模块通过 binder 注册进来。
+
+因此先前那条「按 bean 类名 / `module` 字段过滤」的规则拦不到它们：`ad.add.filter`
+在一次启动里命中 1800 次，却一次 `blocked ad bean` 都没有。
+
+**定位方式**：在 `LayoutInflater.inflate` 上挂探针，inflate 结束后检查结果树里有没有
+上述标志控件。抓到调用栈：
+
+```
+com.kugou.android.app.newtingtab.mc.onCreateViewHolder
+  → tv.e.onCreateViewHolder
+  → com.kugou.android.app.newtingtab.binder.d.v
+  → com.kugou.android.app.newtingtab.binder.d.h0
+```
+
+`binder.d` 确认是**纯广告 binder**：实现 `KG11InnerAdCardManager$InnerAdLoadFinishCallback`，
+`h0()` 唯一职责是 `inflate(2131562753)` 再 `new InnerAdViewHolder(...)`，三个产出 bean 的
+方法 `j0`/`c0`/`f0` 全部 `return 0`。
+
+**做法**：让 `h0()` 正常造出真正的 holder（绕过去必然崩，它内部要 `findViewById` 绑定一堆
+控件），拿到后把 `itemView` 压成 0×0 并 `GONE`；同时在 `g0(holder, bean)` 绑定时再压一次——
+`onCreateViewHolder` 只在首次创建时走，`onBindViewHolder` 每次滚进可视区都走，
+只压一处的话宿主可能重新设置 LayoutParams 把卡片放回来。
+
+**验证状态：规则已安装（`hooks installed=26 skipped=0`），但尚未观测到实际命中。**
+冷启动后日志里没有出现 `collapsed inner ad card`，当时也没有广告卡出现在推荐流，
+无法区分是规则生效还是服务端未下发。**在拿到一次「广告出现 → 卡片没显示 → 日志有
+`collapsed` 」的完整观察之前，这条不算已验证。**
 
 ## 复验方法
 

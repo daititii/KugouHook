@@ -2,6 +2,7 @@ package dev.kugou.kugouhook.hooks
 
 import android.app.Dialog
 import android.view.View
+import android.view.ViewGroup
 import dev.kugou.kugouhook.ClassResolver
 import dev.kugou.kugouhook.Flags
 import dev.kugou.kugouhook.HookManager
@@ -44,6 +45,9 @@ class UiProbeHooks(
     private val popupHits = AtomicInteger()
     private val windowHits = AtomicInteger()
     private val surfaceHits = AtomicInteger()
+    private val dialogInitHits = AtomicInteger()
+    private val dialogFragmentHits = AtomicInteger()
+    private val adCardHits = AtomicInteger()
 
     fun install() {
         if (!flags.enabled(FLAG_KEY)) {
@@ -55,6 +59,109 @@ class UiProbeHooks(
         installPopupWindow()
         installWindowManager()
         installSurfaceView()
+        installDialogConstructor()
+        installDialogFragmentShow()
+        installAdCardInflate()
+    }
+
+    /**
+     * 推荐流里的广告卡（「快手极速版」「免费领酷狗音乐VIP」那两张）。
+     *
+     * 它们的容器 id 是 `giw0`(0x7f0acb5a) / `giw1`(0x7f0acb5b)，但整套 `newtingtab` 包里
+     * 搜不到这个 id，说明卡片是**别的模块**通过 binder 注册进来的。既然不知道是谁，
+     * 就不猜——直接把带这个 id 的 View 的创建点打印出来，看调用栈。
+     *
+     * 只观测，不拦截。确认了创建者再决定拦哪一层。
+     */
+    private fun installAdCardInflate() {
+        val id = "probe.adCard.parse"
+        val inflaterClass = runCatching { Class.forName("android.view.LayoutInflater") }.getOrNull() ?: return
+        val inflate = runCatching {
+            inflaterClass.getDeclaredMethod(
+                "inflate",
+                Integer.TYPE,
+                ViewGroup::class.java,
+                java.lang.Boolean.TYPE
+            ).apply { isAccessible = true }
+        }.getOrNull() ?: run {
+            log.info("probe inflate unavailable")
+            return
+        }
+        hooks.install(id, inflate) { chain ->
+            val result = chain.proceed()
+            runCatching {
+                val layout = chain.args[0] as? Int
+                // 直接检查 inflate 出来的视图树里有没有广告卡的标志性控件。
+                // 比按 layout id 猜可靠：布局 id 未知，但控件 id 已经确认（giw0/giw1）。
+                val root = result as? View
+                val hit = root != null && AD_CARD_MARKERS.any { root.findViewById<View>(it) != null }
+                if (hit) {
+                    val n = adCardHits.incrementAndGet()
+                    if (n <= MAX_LOGS || n % LOG_EVERY == 0) {
+                        log.info(
+                            "probe adCard[$n] layout=0x${layout?.toString(16)} root=${root?.javaClass?.name}\n" +
+                                stackOf()
+                        )
+                    }
+                }
+            }
+            result
+        }
+    }
+
+    /**
+     * 抓 Dialog 的**构造**点，而不只是 show。
+     *
+     * 底部弹层（BottomSheet 形态）经常是先 new 出来、攒好数据再 show，两者不在同一处。
+     * 只看 show 会丢掉真正的构造现场；构造点的栈也更能说明"是哪个业务流程要弹的"。
+     */
+    private fun installDialogConstructor() {
+        val id = "probe.dialog.init"
+        val ctor = runCatching {
+            Dialog::class.java.getDeclaredConstructor(android.content.Context::class.java)
+                .apply { isAccessible = true }
+        }.getOrNull() ?: run {
+            log.info("probe dialog.<init> unavailable")
+            return
+        }
+        hooks.install(id, ctor) { chain ->
+            runCatching {
+                val n = dialogInitHits.incrementAndGet()
+                if (n <= MAX_LOGS || n % LOG_EVERY == 0) {
+                    log.info("probe dialogInit[$n] ${chain.thisObject?.javaClass?.name}\n${stackOf()}")
+                }
+            }
+            chain.proceed()
+        }
+    }
+
+    /**
+     * DialogFragment 走的是 `show(FragmentManager, String)`，不经过 `Dialog.show`。
+     * 酷狗的付费/会员类弹窗大量使用这条路径。
+     */
+    private fun installDialogFragmentShow() {
+        val id = "probe.dialogFragment.show"
+        val cls = runCatching { Class.forName("androidx.fragment.app.DialogFragment") }.getOrNull()
+        val fm = runCatching { Class.forName("androidx.fragment.app.FragmentManager") }.getOrNull()
+        val show = if (cls != null && fm != null) {
+            runCatching { cls.getDeclaredMethod("show", fm, String::class.java).apply { isAccessible = true } }.getOrNull()
+        } else null
+        if (show == null) {
+            log.info("probe dialogFragment.show unavailable")
+            return
+        }
+        hooks.install(id, show, requireVoid = true) { chain ->
+            runCatching {
+                val n = dialogFragmentHits.incrementAndGet()
+                if (n <= MAX_LOGS || n % LOG_EVERY == 0) {
+                    log.info(
+                        "probe dialogFragment[$n] ${chain.thisObject?.javaClass?.name} " +
+                            "tag=${chain.args.getOrNull(1)}\n${stackOf()}"
+                    )
+                }
+            }
+            chain.proceed()
+        }
     }
 
     /**
@@ -180,9 +287,28 @@ class UiProbeHooks(
 
     private companion object {
         const val FLAG_KEY = "ui.probe"
-        const val MAX_LOGS = 3
-        const val LOG_EVERY = 50
+
+        /**
+         * 每种探针各记前 N 条。之前是全局上限 3，结果启动阶段的几个弹窗就把额度吃光了，
+         * 真正想看的那个（用户手动触发的）根本轮不到。
+         */
+        const val MAX_LOGS = 12
+        const val LOG_EVERY = 200
         const val SKIP_FRAMES = 2
-        const val MAX_FRAMES = 10
+        const val MAX_FRAMES = 12
+
+        /**
+         * 推荐流广告卡的标志性控件 id。
+         *
+         * `giw0`(0x7f0acb5a) 是标题栏、`giw1`(0x7f0acb5b) 是图片区、`giz0`(0x7f0acb60) 是关闭按钮。
+         * 这三者在「快手极速版」和「免费领酷狗音乐VIP」两张卡上完全一致，是可靠的识别特征。
+         * 整套 `newtingtab` 包里搜不到这些 id，说明卡片由别的模块通过 binder 注册，
+         * 所以布局 id 未知——只能靠"inflate 出来的树里有没有这些控件"来抓。
+         */
+        val AD_CARD_MARKERS = intArrayOf(
+            0x7f0acb5a, // giw0 标题栏
+            0x7f0acb5b, // giw1 图片区
+            0x7f0acb60, // giz0 关闭按钮
+        )
     }
 }
