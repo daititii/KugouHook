@@ -202,10 +202,46 @@ app/src/main/java/dev/kugou/kugouhook/
    读 `q8.e#b`/`c` 才发现它是**上报曝光/点击/关闭次数**的统计结构
    （`count` / `total_count` / `click` / `close`）。清空它只会让服务端认为这些位从未
    曝光过，可能触发更频繁的推送。**效果与预期相反。**
-3. **广告 SDK 初始化层** —— 见下节。
+3. **广告 SDK 初始化层**（`TMEAds#init` / `GDTADManager#initWith`）—— 见下节。
 
 结论：20.6.4 没有统一的广告拦截点。每个位的 bean 类型、绑定时机、生命周期都不同，
 只能逐条处理。新增一位时，先用 `UiProbeHooks` 观测它由谁触发，再决定拦在数据层还是呈现层。
+
+### 为什么不能拦广告 SDK 初始化
+
+调研结论：**三套 SDK 互相独立，而且各自带"按广告对象自愈式重初始化"，初始化层不是一个可拦的汇聚点。**
+
+| 平台 | 初始化入口 | 宿主调用点 |
+|---|---|---|
+| TME / Uni（Mars 2.37.1） | `com.tencentmusic.ad.TMEAds#init(Context, String, InitParams)` | `i9.c#c()`（唯一主路径） |
+| GDT / 优量汇 | `com.qq.e.comm.managers.GDTADManager#initWith(Context, String)` | `xk0.j#a()`，**另有 5 处** |
+| AMS | `com.tencentmusic.ad.a1.a#c(String)` | 自定义开屏 / playable |
+
+各平台跳过初始化后的实际行为（都反编译核对过）：
+
+- **TME**：不崩。`i1.m#call()` 有明确的 `PosConfig is null` 分支，回调
+  `onAdError(10002)`，业务侧走正常失败路径（`BannerCompeteAdProtocol$i` → `onNext(0)`）。
+  代价是**每条失败路径都会 `c1.f.a(...)` 重拉一次 posConfig**，广告位越多网络放大越明显；
+  另外 `i9.c#l` 会因为 `TMEAds.getAdPurchaseInfo` 拿不到数据而每 1 秒重试一次，空转堆积。
+- **GDT**：**会崩或卡死**。`TangramAdManager#buildAdLoader` 在未初始化时抛
+  `IllegalArgumentException`，而唯一调用方 `GdtTangramAdLoader#c` 只 catch 了 JSON 解析，
+  异常会冒到 `@WebCallCmd 1414` 的 JS bridge；`TGSplashAD` 在 `this.a == null` 时
+  `fetchAdOnly` / `fetchAndShowIn` 都是裸 `return`，**不发任何回调**，开屏卡到超时。
+
+还有三个结构性原因让这个方向本身就不成立：
+
+1. **GDT 会自愈重初始化。** `com.qq.e.tg.AbstractAD$1#run` 在每个广告对象构造时兜底再调
+   一次 `initWith`，`AMSSplashAdapter#createTgSplash` 也会自己 `initWith`。拦一处没有意义。
+2. **初始化被非广告功能复用。** `GdtPreloadAdManager`（免费听激励领时长）会判
+   `isInitialized()`，初始化失败直接 `onError(3)`，把**领时长流程堵死**——这是功能性误伤，
+   不是单纯去广告。`com.tencent.ams.fusion.widget.apng.APNGDrawable` 还被
+   `com.kugou.common.utils.k5#l` 当通用 APNG 播放器用（是否有纯 UI 用途未验证）。
+3. **TME 原生/激励确实有汇聚点，但位置更低。** `TMENativeAD#loadAd` → `i1.m` →
+   拦截器链 → `i1.e/i.r/i.p`。这属于 SDK 内部请求分发，不是初始化层，而且
+   **覆盖不到开屏、GDT Tangram、酷狗自有 `home_card`**。
+
+**判断标准：初始化层是"让所有广告一起死"，代价是非广告功能跟着死；
+广告位数据层是"让某一条广告不成立"，代价是逐条维护。后者才符合本模块"只改界面"的定位。**
 
 ### 为什么 `comment_flow` 能整条掐掉
 

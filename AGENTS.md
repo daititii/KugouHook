@@ -160,8 +160,11 @@ $apk = 'G:\hook_test\kugou-20649-base.apk'
 - 不要往子进程（`:support`、`:message`）注 hook，没有收益只有风险。
 - **没有统一的广告拦截点。** `q8.d` 的构造函数登记了 19 个广告位名，是目前最可靠的
   "还有哪些位置"参照；19 个位的数据结构、绑定时机各不相同，只能逐条处理。
-  两条看起来"一处拦全部"的路都验证过不可行，原因见
-  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的「广告位总表」一节。
+  三条看起来"一处拦全部"的路都验证过不可行（请求层 `h8.a`、统计字段 `q8.d.i`、
+  广告 SDK 初始化层），原因见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+  的「广告位总表」与「为什么不能拦广告 SDK 初始化」两节。
+  **别再去试初始化层**：GDT 侧拦了会抛未捕获异常、开屏静默卡到超时，还会堵死
+  `GdtPreloadAdManager` 的免费听领时长；且 `AbstractAD$1` 会在每个广告对象构造时自愈重 init。
 - **付费推广层是 SSR H5，不是原生页面。** 点击 VIP 歌曲弹出的「会员专属歌曲，付费享
   上亿曲库」底部弹层，地址写死在 `FeeFrontInterceptDialogUtils` 里
   （`https://gateway.kugou.com/ssr_vippopup/intercept`），所以整包搜不到那句文案——
