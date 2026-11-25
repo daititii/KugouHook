@@ -66,7 +66,8 @@ adb shell su -c 'touch /data/data/com.kugou.android/cache/kugouhook.audit'
 ./gradlew :app:assembleRelease    # R8 混淆 + 资源收缩，发布用
 ```
 
-发布流程、签名配置和版本号约定见 [AGENTS.md](AGENTS.md)。
+发布流程、签名配置和版本号约定见 [AGENTS.md](AGENTS.md)，
+同步到 LSPosed 模块仓库的步骤见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ## 已知未处理
 
