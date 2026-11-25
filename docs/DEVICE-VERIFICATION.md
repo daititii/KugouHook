@@ -32,6 +32,51 @@
 - 会员中心卡片 `hxb1` 和金币中心卡片 `hnm0` 均不在界面层级中，对应两条 `hidden mine … center card` 日志已命中。最近播放、歌单和迷你播放栏播放按钮保留。
 - 更新前，在「我的」页顶部向下拉会打开金币中心覆盖页（`mp6`）；更新后同一手势命中 `suppressed mine pull-to-open coin center`，回弹后仍留在「我的」页。规则不拦截其他页面入口或改变金币数据。
 
+## 「我的」页下拉的金币引导横幅（PAG 动画）
+
+上一节只拦了「松手后跳转」这一步，**下拉过程中横幅照样滑出来**——黄色一块，
+写着「一大波金币等你领取 / 下拉进入金币中心 ⌄」。用户反馈"还是很丑"，要求不要让它出现。
+
+**它不是 Web、也不是静态图，是 PAG 动画。** 实机 `dumpsys activity top` 抓到层级：
+
+```
+com.kugou.android.app.tabting.x.mine.PAGRefreshHeaderView{ V.E...... 0,-784-1440,0}
+  org.libpag.PAGView{ V.ED..... 0,0-126,126}
+```
+
+`PAGRefreshHeaderView` 实现 `ILoadingLayout`，**它就是这个列表的下拉刷新头**，
+只是被换成了金币广告皮肤：
+
+```
+构造        this.g = getConfigMineRefreshPagUrl()      ← 素材地址
+#g()        new PAGView(this); addView(pagView)
+#j()        setComposition(pag); setProgress(0); play()
+#l(float)   下拉时逐帧 setTranslationY + play()
+```
+
+**做法**：让 `getConfigMineRefreshPagUrl()` 返回空串。配置读不到时它会回退到写死的
+默认地址，所以改配置不管用，只能在这里拦。返回空后 `j()` 的
+`isNotEmpty(f) && exists(f)` 不成立 → 不播放。刷新头、下拉手势、刷新功能全部保留。
+
+同时挂了 `getConfigMineRefreshImgUrl()`（webp 静图兜底），实测未命中，留作冗余。
+
+**验证结果**：Release 包，`hooks installed=32 skipped=0`，进「我的」页下拉即命中：
+
+```
+hook hit[1]: vip.ui.mineRefreshArtwork.getConfigMineRefreshPagUrl
+disabled mine pull-down coin artwork (getConfigMineRefreshPagUrl -> empty)
+```
+
+界面确认：下拉时顶部不再是黄色横幅，只有深色背景；下拉刷新功能正常。
+
+> 排查过程中走过的错路，避免重蹈：
+> 1. **别用 `findrefs string` 找这个文案** —— 文案画在 PAG 动画帧里，DEX 和资源表都没有。
+>    UI dump 也抓不到，因为它不是 TextView。
+> 2. **`x#createLoadingLayout` 不是刷新头工厂。** 拦它让走 `super`：一次下拉被调用
+>    上千次，画面没变、调用量还放大了。`hook hit` 上千次/秒本身就是"拦错入口"的信号。
+> 3. 第一版只保留了横幅替换、把原来的 `mineCoinPull` 跳转拦截删了，结果手势能真的
+>    进金币中心。**两条规则性质不同，必须同时存在。**
+
 ## 搜索首页、运营商推广与播放提示
 
 同一设备安装最终 Debug 构建后冷启动：`hooks installed=22 skipped=0`（搜索首页、运营商推广、

@@ -29,6 +29,7 @@ class VipPromptHooks(
     private val seenMineVipCard = AtomicBoolean()
     private val seenMineCoinCard = AtomicBoolean()
     private val seenCoinPull = AtomicBoolean()
+    private val seenMineCoinEnter = AtomicBoolean()
     private val seenCarrierBubble = AtomicBoolean()
     private val seenCarrierOperation = AtomicBoolean()
     private val seenCarrierOperationText = AtomicBoolean()
@@ -49,6 +50,7 @@ class VipPromptHooks(
         installMiniPlayerPrompt()
         installMineCards()
         installMineCoinPull()
+        installMineCoinEnter()
         installCarrierBubble()
         installFeeBanner()
         installQueueVipBanner()
@@ -182,11 +184,94 @@ class VipPromptHooks(
         }
     }
 
+    /**
+     * 「我的」页下拉时顶部滑出的金币中心引导横幅（黄色 PAG 动画，
+     * 「一大波金币等你领取 / 下拉进入金币中心」）。
+     *
+     * ## 它是什么
+     *
+     * `PAGRefreshHeaderView` 实现 `ILoadingLayout`，它**就是这个列表的下拉刷新头**，
+     * 只是被换成了金币广告皮肤：
+     *
+     * ```
+     * PAGRefreshHeaderView(Context)
+     *   this.g = getConfigMineRefreshPagUrl()      ← 动画素材地址
+     * PAGRefreshHeaderView#g()   new PAGView(this); addView(pagView)
+     * PAGRefreshHeaderView#j()   setComposition(pag); setProgress(0); play()
+     * PAGRefreshHeaderView#l(f)  下拉时逐帧 setTranslationY + play()
+     * ```
+     *
+     * 素材是 `org.libpag.PAGView` 播放的 `.pag` 动画，**文案画在动画帧里**，
+     * 所以 UI dump 抓不到文字、`findrefs string` 也搜不到——查的时候别白跑。
+     *
+     * ## 为什么拦 `getConfigMineRefreshPagUrl()`
+     *
+     * 它是这条链路的起点，返回 PAG 素材地址：
+     *
+     * ```java
+     * static String getConfigMineRefreshPagUrl() {
+     *     String url = config("listen.mine.refresh.pag_url");
+     *     return TextUtils.isEmpty(url) ? "https://…/….pag" : url;
+     * }
+     * ```
+     *
+     * **配置读不到时它会回退到写死的默认地址**，所以改配置不管用。返回空串后：
+     * `g()` 仍会创建 PAGView 但拿不到素材，`j()` 的 `isNotEmpty(f) && exists(f)`
+     * 直接不成立 → 不播放、不显示动画。刷新头本身、下拉手势、刷新功能全部保留。
+     *
+     * ## 试过但不对的路
+     *
+     * 拦 `x#createLoadingLayout` 让它走 `super`：该方法在一次下拉里被调用上千次，
+     * 替换返回值既没改变画面、又放大了调用量。**它不是刷新头工厂**——
+     * 全包 `new PAGRefreshHeaderView` 只有 `x:21` 一处，但那个分支实际走不到，
+     * 说明「我的」页的刷新头是从别的地方挂上去的。
+     *
+     * 教训：`hit` 次数异常高（上千次/秒）本身就是信号，说明拦的不是这件事的入口。
+     */
     private fun installMineCoinPull() {
-        // The adjacent i$f callback still restores the page and completes the pull gesture.
-        val method = resolver.findClass("com.kugou.android.app.tabting.x.mine.i\$e")?.let { exactVoid(it, "run") }
+        val id = "vip.ui.mineRefreshArtwork"
+        val header = resolver.findClass(PAG_REFRESH_HEADER)
+        if (header == null) {
+            hooks.reportLoss(id, "PAGRefreshHeaderView not found")
+            return
+        }
+        // 两个素材来源都掐，理由不同：
+        //   getConfigMineRefreshPagUrl()  -> PAG 动画，**实测生效的就是这条**
+        //   getConfigMineRefreshImgUrl()  -> webp 静图，PAG 加载失败时的兜底
+        // 实机只命中了前者（后者那次没打印），保留后者是为了素材下发方式变化时不至于漏。
+        var installed = 0
+        for (name in MINE_REFRESH_ARTWORK_GETTERS) {
+            val getter = header.declaredMethods.firstOrNull {
+                it.name == name && it.parameterCount == 0 && it.returnType == String::class.java
+            }
+            if (getter == null) continue
+            getter.isAccessible = true
+            hooks.install("$id.$name", getter) {
+                if (seenCoinPull.compareAndSet(false, true)) {
+                    log.info("disabled mine pull-down coin artwork ($name -> empty)")
+                }
+                ""
+            }
+            installed++
+        }
+        if (installed == 0) hooks.reportLoss(id, "no artwork getter found")
+    }
+
+    /**
+     * 下拉到底后"进入金币中心"那一步的拦截，独立于上面的刷新头替换。
+     *
+     * 两条规则性质不同，不能互相替代：
+     * - `vip.ui.mineRefreshHeader` 换掉下拉刷新头，去掉黄色引导横幅的视觉
+     * - `vip.ui.mineCoinPull` 拦回弹回调，阻止真正进入金币中心
+     *
+     * 上一版只保留了前者、删掉了后者，结果手势照样能进金币中心。
+     */
+    private fun installMineCoinEnter() {
+        val method = resolver.findClass(MINE_COIN_ENTER)?.let { exactVoid(it, "run") }
         hooks.install("vip.ui.mineCoinPull", method, requireVoid = true) {
-            if (seenCoinPull.compareAndSet(false, true)) log.info("suppressed mine pull-to-open coin center")
+            if (seenMineCoinEnter.compareAndSet(false, true)) {
+                log.info("suppressed mine pull-to-open coin center")
+            }
             null
         }
     }
@@ -475,5 +560,17 @@ class VipPromptHooks(
         private const val MINE_VIP_CARD = 0x7f0adb36 // id/hxb1
         private const val MINE_COIN_CARD = 0x7f0ad867 // id/hnm0
         private const val MINI_PLAYER_VIP_PROMPT = 0x7f0a6d0f // id/vfi
+
+        /** 「我的」页下拉刷新头，内嵌 PAG 动画 / webp 静图作为金币广告皮肤。 */
+        private const val PAG_REFRESH_HEADER = "com.kugou.android.app.tabting.x.mine.PAGRefreshHeaderView"
+
+        /** 两个素材地址 getter：前者是 PAG 动画，后者是兜底的 webp 静图。 */
+        private val MINE_REFRESH_ARTWORK_GETTERS = listOf(
+            "getConfigMineRefreshPagUrl",
+            "getConfigMineRefreshImgUrl",
+        )
+
+        /** 下拉到底、回弹进入金币中心的回调。 */
+        private const val MINE_COIN_ENTER = "com.kugou.android.app.tabting.x.mine.i\$e"
     }
 }
