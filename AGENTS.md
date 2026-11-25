@@ -59,6 +59,7 @@ LSPosed 模块，目标进程 `com.kugou.android` 主进程。只做**界面层*
 | 发预发布 | Actions 手动触发 | 建 `v<versionName>` 预发布 |
 | 发正式版 | 手动触发 + 勾 `stable` | 建正式版并标 latest |
 | 同版本重建 | 手动触发 + 勾 `force` | 删旧 Release 重建；不勾则失败并提示升版本 |
+| 上 LSPosed 模块列表 | `pwsh scripts/publish-lsposed.ps1` | 同步到镜像仓库，站点才会显示新版本 |
 
 **版本号必须两处同步改**，CI 第一步就比对：
 
@@ -71,6 +72,25 @@ LSPosed 模块，目标进程 `com.kugou.android` 主进程。只做**界面层*
 `applicationId`（`io.github.daititii.kugouhook`）是 Android 与 LSPosed 的模块身份，
 改名等于换一个模块：用户必须先禁用旧包再启用新包。Kotlin 包名
 `dev.kugou.kugouhook`、`java_init.list` 入口、R8 规则、作用域 `com.kugou.android` 与之无关，不要跟着改。
+
+### LSPosed 模块仓库是另一个仓库
+
+`modules.lsposed.org` **只读 `Xposed-Modules-Repo/io.github.daititii.kugouhook`**，不读本仓库。
+上游发版和站点更新是两件独立的事，漏了后者不会报错，只是站点上永远停在旧版本
+（v0.1.2 → v0.1.3 就是这样卡住的）。
+
+发完上游 Release 后再跑一次：
+
+```powershell
+pwsh scripts/publish-lsposed.ps1 -DryRun   # 先看要发什么
+pwsh scripts/publish-lsposed.ps1           # 实际同步
+```
+
+脚本从上游 Release 直接取 APK（不重复构建，保证两边字节一致），tag 按官方硬性格式
+`versionCode-versionName`（`4-0.1.3`，**不是** `v0.1.3`）。格式写错不会报错，只是模块列表里
+不显示更新。已存在同 tag 会先删再建（连 git tag 一起删）。
+
+站点由爬虫定时抓取，同步后几分钟到几十分钟才显示，不用反复刷。
 
 ## 逆向工具：优先用 rust_ASC，不要用 JADX
 

@@ -6,6 +6,8 @@ name: Build & Release
 #                 **不创建 Release**，不碰 tag。产物在 run 页面底部下载。
 #
 #   手动触发       构建 + 发布。默认发**预发布**（prerelease）；勾选 stable 才发正式版。
+#                发完还要再跑一次 scripts/publish-lsposed.ps1 —— modules.lsposed.org 只读
+#                Xposed-Modules-Repo/<包名>，本 workflow 不碰那个仓库。
 #
 # 为什么 push 不发版：每次提交都产出一个 Release，版本列表会迅速变成一堆没人验证过的包，
 # "最新版"也就失去了意义。构建产物本来就能在 run 里拿到，Release 应该只留决定要发的那几个。
