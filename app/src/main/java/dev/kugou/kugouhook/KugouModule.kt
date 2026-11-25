@@ -7,6 +7,7 @@ import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import dev.kugou.kugouhook.hooks.AdHooks
+import dev.kugou.kugouhook.hooks.CommentAdHooks
 import dev.kugou.kugouhook.hooks.MineBannerHooks
 import dev.kugou.kugouhook.hooks.SplashAdHooks
 import dev.kugou.kugouhook.hooks.SplashGateHooks
@@ -125,6 +126,9 @@ class KugouModule : XposedModule() {
         // 开屏广告的数据层闸门：抽样不通过即不产生广告开屏，普通开屏保留。
         runCatching { SplashGateHooks(resolver, hm, log).install() }
             .onFailure { log.error("SplashGateHooks failed", it) }
+        // 歌曲评论页信息流广告（comment_flow 位）：掐掉请求发起，不是隐藏 View。
+        runCatching { CommentAdHooks(resolver, hm, log).install() }
+            .onFailure { log.error("CommentAdHooks failed", it) }
         // 升级弹窗按 IVersionUpgrade 的接口语义拦截，不依赖具体控件 ID，因此不设版本门控。
         runCatching { UpdatePromptHooks(resolver, hm, log).install() }
             .onFailure { log.error("UpdatePromptHooks failed", it) }

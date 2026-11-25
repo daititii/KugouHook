@@ -186,7 +186,7 @@ app/src/main/java/dev/kugou/kugouhook/
 | `playpage_link` | 播放页链接卡 | ❌ 未处理 |
 | `play_card` | 播放页卡片 | ❌ 未处理 |
 | `play_top_bubble` | 播放页顶部气泡 | ❌ 未处理 |
-| `comment_flow` | 评论流广告 | ❌ 未处理 |
+| `comment_flow` | 评论流广告 | ✅ CommentAdHooks |
 | `singer_page_banner` | 歌手页 banner | ❌ 未处理 |
 | `mobile_window` | 全屏弹窗广告 | ❌ 未处理 |
 | `mobile_bottom_tab` | 底部 tab 广告 | ❌ 未处理 |
@@ -202,9 +202,21 @@ app/src/main/java/dev/kugou/kugouhook/
    读 `q8.e#b`/`c` 才发现它是**上报曝光/点击/关闭次数**的统计结构
    （`count` / `total_count` / `click` / `close`）。清空它只会让服务端认为这些位从未
    曝光过，可能触发更频繁的推送。**效果与预期相反。**
+3. **广告 SDK 初始化层** —— 见下节。
 
 结论：20.6.4 没有统一的广告拦截点。每个位的 bean 类型、绑定时机、生命周期都不同，
 只能逐条处理。新增一位时，先用 `UiProbeHooks` 观测它由谁触发，再决定拦在数据层还是呈现层。
+
+### 为什么 `comment_flow` 能整条掐掉
+
+上面说"不能拦请求"，`comment_flow` 是个例外，区别在于**拦的位置不同**：
+
+- ❌ `h8.a#k(...)` 返回 null —— 这里已经是"发出请求"本身，拦了宿主拿到失败。
+- ✅ `CommentADFragment#ZT()` 直接 return —— 这里是"**要不要发请求**"的判断函数，
+  跳过它宿主走的是自己那条 `if (!eU()) log("no show ad")` 的既有分支，
+  请求根本不发，没有任何失败态需要处理。
+
+判断标准：**方法里如果已经有"不展示"的合法分支，就在分流之前拦；否则不要拦请求层。**
 
 ## ApkVersion：为什么手写 AXML 解析
 

@@ -164,6 +164,46 @@ collapsed inner ad card (create/d)
 
 界面确认卡片不再出现，推荐流正常滚动、无空白卡、无崩溃。
 
+## 歌曲评论页信息流广告
+
+评论页在正常评论之间插一条带「广告」角标的卡片（实测《鸣潮》下载推广，
+`NativeUnifiedADData` / GDT 原生广告），广告位名是 `comment_flow`。
+
+**链路**（`CommentADFragment`，20.6.4）：
+
+```
+hR() → postDelayed(Runnable) → HT() → ZT()          ← 私有、无参、void
+  ZT(): if (!eU())                        → "initDatas: no show ad"
+        else if (!j6.b.j())               → 宿主广告开关
+          else if (!rd5.b.b())            → 会员免广告
+            rx.Observable.v(new CommentADFragment$e(this))
+              → h8.a#k(hash, albumId, mixId).execute()
+              → http://ads.service.kugou.com/v3/comment_flow
+              → CommentADFragment$c#c(bean)
+              → cU(bean) / dU(bean, adData)  → CommentAdapter 固定位置
+```
+
+**为什么拦 `ZT()`**：它是唯一发起入口，跳过它宿主走的就是自己那条
+"no show ad" 分支——请求根本不发，不产生空白占位，也不需要伪造返回值。
+对比其他候选：拦 `h8.a#k` 会走请求失败分支；拦 `cU`/`dU` 时 GDT 已经跑完
+`loadData`；`$e` 是内部类，名字随 R8 漂移。
+
+**做法**：`comment.flow.gate` hook 私有 `ZT()`（按"名字 + 无参 + void"定位，
+不写死签名）；`comment.flow.drop.cU` 作为第二道保险拦数据写入。
+
+**验证结果**：`hooks installed=30 skipped=0`，进评论页即命中：
+
+```
+hook hit[1]: comment.flow.gate
+blocked comment flow ad (ZT -> no request)
+```
+
+界面确认：评论页连续滚动 3 屏，UI dump 里 `text="广告"` 与「立即下载」均为 false，
+评论列表、楼层回复、点赞数全部正常。
+
+> 未做关闭模块的界面对照。判断依据是 hook 命中 + 界面无广告 + 宿主走
+> "no show ad" 分支。
+
 ## 复验方法
 
 1. 安装调试包，在 LSPosed 只勾选酷狗音乐。关闭作用域可以做界面对照，切换前后都需冷启动，不必清除宿主数据。
