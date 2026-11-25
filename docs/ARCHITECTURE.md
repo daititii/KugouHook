@@ -243,6 +243,50 @@ app/src/main/java/dev/kugou/kugouhook/
 **判断标准：初始化层是"让所有广告一起死"，代价是非广告功能跟着死；
 广告位数据层是"让某一条广告不成立"，代价是逐条维护。后者才符合本模块"只改界面"的定位。**
 
+### 备选：SDK 请求层兜底（未实现，留档）
+
+初始化层不行，**但请求层可以**——这是两回事，别混。查 `TMENativeAD#loadAd` 的引用方
+（`rust_ASC findrefs method loadAd --class …TMENativeAD`）得到下面这张表，
+20.6.4 上它是 TME 原生广告的**唯一发请求方法**：
+
+| 宿主调用方 | 槽位 ID | 用户看到的位 |
+|---|---|---|
+| `HomeTabContractAdProtocol` | `10030102` `10030202` `10030502` | 首页卡片（`home_card`） |
+| `BannerCompeteAdProtocol` | 由参数传入 | 竞品 banner |
+| `BannerAdPresenter` | `10080102` | 搜索 banner（`search_banner`） |
+| `AdDataControllerImpl` | `1416334873` `10020302` | 我的页 banner |
+| `FreeModeTipsHelper` | `10065301` | 免流提示 |
+| `PlayerEasterEggUtil` | `10011101` | 播放页彩蛋 |
+| `g10.w` / `v20.g` / `g7.b$a` / `FXCommonFreeModeDialog` | `10065501` `10063301` … | 其他 |
+
+**13 个宿主类 → 1 个方法。** 做法是拦截 `loadAd(int, LoadAdParams)`，反射取
+`listener` 字段后在主线程回调 `onAdError(AdError(-101, "…"))`，业务侧本来就有这个分支。
+
+GDT 侧对应的是 `NativeUnifiedAD#loadData(int, LoadAdParams)`，但**回调是构造时以参数
+传入的私有字段**，`loadData` 自己不带 listener，反射取字段的稳定性明显低于 TME 侧
+（`NativeUnifiedAD` 是混淆过的 SDK 内部类）。评估结论：可行但脆弱。
+
+#### 为什么没有直接做
+
+1. **两个维度不能互相替代。** `q8.d` 登记的是 19 个**产品维度**的位（用户看得见的位置），
+   SDK 层是**技术维度**（数据从哪来）。同一个位可能同时走 TME 和 GDT——搜索 banner
+   在两边都有引用。按槽位 ID 拦，日志里只有 `10080102`，看不出对应哪个广告位，
+   "19 个里覆盖了几个"要逐个反推。
+2. **会误伤激励功能。** `g7.b$a` 和 `FXCommonFreeModeDialog` 用 TME 原生广告做的是
+   **免费听领时长**，不是广告位。统一拦 `loadAd` 会把这个功能一起打掉。
+3. **会降低已完成的 6 位的精确性。** 现在这些位是按数据存在性判断的，精确、有独立日志、
+   可单独验证。换成 SDK 层统一拦，反而变粗。
+
+#### 如果以后要做，建议形态
+
+加一条 `ad.sdk.tme` 规则，**默认关闭**，由 `kugouhook.flags` 打开：
+
+- 日常仍按 19 个位逐个精确处理，保持可验证性
+- 宿主大版本突然冒出一批 TME 广告时，临时打开这个开关一次性止血，不用等逐位适配
+- 不改默认行为，不影响已验证的部分
+
+GDT 侧先不做。
+
 ### 为什么 `comment_flow` 能整条掐掉
 
 上面说"不能拦请求"，`comment_flow` 是个例外，区别在于**拦的位置不同**：

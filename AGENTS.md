@@ -165,6 +165,13 @@ $apk = 'G:\hook_test\kugou-20649-base.apk'
   的「广告位总表」与「为什么不能拦广告 SDK 初始化」两节。
   **别再去试初始化层**：GDT 侧拦了会抛未捕获异常、开屏静默卡到超时，还会堵死
   `GdtPreloadAdManager` 的免费听领时长；且 `AbstractAD$1` 会在每个广告对象构造时自愈重 init。
+- **SDK 请求层可行但没做，作为备选留档。** `TMENativeAD#loadAd(int, LoadAdParams)` 是
+  20.6.4 上 TME 原生广告的唯一发请求方法（13 个宿主类都走它），拦它能一次性覆盖所有
+  TME 原生位；GDT 对应的 `NativeUnifiedAD#loadData` 因回调是构造时传入的私有字段，
+  要反射取，稳定性差。**没做的原因**：产品维度（19 个位）和技术维度（SDK 层）不能互相
+  替代；且会误伤 `g7.b$a` / `FXCommonFreeModeDialog` 的免费听领时长功能。
+  细节和"以后怎么做"的形态见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+  的「备选：SDK 请求层兜底」一节。
 - **付费推广层是 SSR H5，不是原生页面。** 点击 VIP 歌曲弹出的「会员专属歌曲，付费享
   上亿曲库」底部弹层，地址写死在 `FeeFrontInterceptDialogUtils` 里
   （`https://gateway.kugou.com/ssr_vippopup/intercept`），所以整包搜不到那句文案——
