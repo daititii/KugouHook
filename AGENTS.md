@@ -39,6 +39,29 @@ LSPosed 模块，目标进程 `com.kugou.android` 主进程。只做**界面层*
 
 然后看 `build.log` 里的 `BUILD SUCCESSFUL`，不要等进程退出信号。
 
+### git push 曾因 credential.helper 指向不存在的程序而静默挂住
+
+症状和上面的构建一样：命令没有任何输出，也不返回，看起来像网络卡住。
+实际原因是 `credential.helper=manager` 指向 Git Credential Manager，
+而本机没装，git 调用它时报 `git: 'credential-manager' is not a git command`，
+然后**停在等待输入用户名密码**。
+
+修法：全局的 `credential.helper` 已经去掉，仓库内改为调用 gh 的凭据接口
+（`gh` 本身是登录好的，见下表）。用一个包装脚本避开路径里的空格：
+
+```bash
+# /g/hook_test/_artifacts/gh-cred.sh
+#!/bin/sh
+exec "/c/Program Files/GitHub CLI/gh.exe" auth git-credential "$@"
+```
+
+```bash
+git config --local credential.helper '!/g/hook_test/_artifacts/gh-cred.sh'
+```
+
+**遇到任何 git 命令长时间无输出，先加 `GIT_TERMINAL_PROMPT=0` 跑一次**，
+它会立刻报错而不是干等。
+
 ## 动代码前必须知道的三件事
 
 1. **hook 点是精确反射 + 资源 ID，不是模糊扫描。** 类名逐版本漂移，但漂移是逐条的。
