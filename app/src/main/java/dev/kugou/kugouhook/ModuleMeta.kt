@@ -1,5 +1,6 @@
 package dev.kugou.kugouhook
 
+import io.github.libxposed.api.XposedModule
 import java.util.zip.ZipFile
 
 /**
@@ -21,18 +22,35 @@ internal object ModuleMeta {
     private const val ENTRY = "META-INF/xposed/module.prop"
 
     /**
-     * 解析本模块自己的 APK 路径。
+     * 解析本模块自己的 APK 路径。两条路，按可靠性排序：
      *
-     * 不依赖框架 API（`PackageReadyParam` 上没有模块路径字段），也不读宿主信息 ——
-     * 用本模块某个类所在的 code source 反推，这是 Java 层面的通用做法：
-     * 模块的 dex 一定来自它自己的 base.apk。
+     * 1. **框架给的 `moduleApplicationInfo`**（API 102 的 `XposedInterface#getModuleApplicationInfo`）。
+     *    这是框架自己加载模块时用的那份 `ApplicationInfo`，`sourceDir` 就是模块 APK 的实际路径，
+     *    多用户 / 克隆 / 分身场景下也是准的。
+     *
+     * 2. **`protectionDomain.codeSource` 反推**。纯 Java 做法，不依赖框架 API，
+     *    在普通 JVM 上稳定可用。但在 LSPosed 里模块 dex 是被框架"塞"进宿主的
+     *    ClassLoader 的，`CodeSource` 往往是 null —— 0.1.4 的日志正是全线
+     *    `unknown (module APK path unavailable)`，即这条路在目标环境下从来没走通过。
+     *
+     * 所以第 1 条是主路，第 2 条只作兜底。
      */
-    fun ownApkPath(): String? = runCatching {
-        val src = ModuleMeta::class.java.protectionDomain?.codeSource?.location
-            ?: return@runCatching null
-        val path = java.io.File(src.toURI()).path
-        path.takeIf { it.endsWith(".apk") }
-    }.getOrNull()
+    fun ownApkPath(module: XposedModule?): String? {
+        // 主路：框架给的模块 ApplicationInfo。
+        runCatching {
+            val info = module?.moduleApplicationInfo
+            val dir = info?.sourceDir
+            if (!dir.isNullOrEmpty() && dir.endsWith(".apk")) return dir
+        }
+
+        // 兜底：code source。
+        return runCatching {
+            val src = ModuleMeta::class.java.protectionDomain?.codeSource?.location
+                ?: return@runCatching null
+            val path = java.io.File(src.toURI()).path
+            path.takeIf { it.endsWith(".apk") }
+        }.getOrNull()
+    }
 
     /** 形如 `v0.1.2 (versionCode=3) apk=/data/app/…/base.apk`。 */
     fun describe(apkPath: String?): String {

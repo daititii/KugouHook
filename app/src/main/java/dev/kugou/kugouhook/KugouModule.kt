@@ -90,7 +90,7 @@ class KugouModule : XposedModule() {
         }.getOrNull()
         log.info("=== KugouHook start (pid=${android.os.Process.myPid()}) ===")
         // 先自报模块版本：排查"装了但没效果"时，第一条要知道的就是跑得到底是哪份包。
-        log.info("module: ${ModuleMeta.describe(ModuleMeta.ownApkPath())}")
+        log.info("module: ${ModuleMeta.describe(ModuleMeta.ownApkPath(this))}")
 
         val versionCode = readVersionCode(param)
         if (versionCode == AUDITED_VERSION_CODE) {

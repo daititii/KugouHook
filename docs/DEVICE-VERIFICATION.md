@@ -249,6 +249,31 @@ blocked comment flow ad (ZT -> no request)
 > 未做关闭模块的界面对照。判断依据是 hook 命中 + 界面无广告 + 宿主走
 > "no show ad" 分支。
 
+## 模块自报版本（`module:` 日志行）
+
+每次冷启动的第一条业务日志会自报"跑起来的到底是哪份包"。0.1.4 及之前它一直是：
+
+```
+module: unknown (module APK path unavailable)
+```
+
+原因：`ModuleMeta.ownApkPath()` 用 `protectionDomain.codeSource` 反推模块 APK 路径。
+这是普通 JVM 的通用做法，但 **LSPosed 把模块 dex 塞进宿主 ClassLoader，`CodeSource` 为 null**，
+所以这条路在目标环境下从来没走通过——日志行存在，但永远填不出值。
+
+改法是改用框架 API：`XposedModule#getModuleApplicationInfo()`（API 102 的
+`XposedInterface` 上）拿 `ApplicationInfo.sourceDir`，再退回 `codeSource` 兜底。
+
+**验证结果**：Release 包覆盖安装（同一发行签名，无需卸载），冷启动即得：
+
+```
+module: v0.1.4 (versionCode=5) apk=/data/app/~~Rn-cpAoW4-57anJ_1M3U_w==/io.github.daititii.kugouhook-rAmPdZhiW-opbw5hr2RyYw==/base.apk
+install summary: hooks installed=32 skipped=0
+```
+
+APK 路径本身也有诊断价值：重装会重新分配 `/data/app/~~<随机>/` 前缀，
+日志里的路径能区分"升级成功了"和"装的还是旧包"。
+
 ## 复验方法
 
 1. 安装调试包，在 LSPosed 只勾选酷狗音乐。关闭作用域可以做界面对照，切换前后都需冷启动，不必清除宿主数据。

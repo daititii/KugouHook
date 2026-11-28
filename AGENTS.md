@@ -24,6 +24,21 @@ LSPosed 模块，目标进程 `com.kugou.android` 主进程。只做**界面层*
 本机内存 16 GB。**JADX 已弃用**，反编译一律走 rust_ASC（见下文），不再有"跑后台任务前
 先关图形界面"这类约束。
 
+### 构建命令要重定向输出，别让它刷屏
+
+`gradlew.bat` 在 MSYS Bash 下直接把 stdout 接到终端时，**构建其实已经完成、daemon 也已
+返回 `Success`，但客户端进程迟迟不退出**，看起来像卡死。判断依据是 daemon 日志
+（`G:/Gradle/daemon/<版本>/daemon-*.out.log`）里的 `daemon has finished executing the build`
+和 `BUILD SUCCESSFUL`——那条出现了就说明活儿干完了。
+
+稳妥写法是后台跑 + 输出进文件：
+
+```bash
+./gradlew.bat --offline :app:assembleRelease > /g/hook_test/_artifacts/build.log 2>&1
+```
+
+然后看 `build.log` 里的 `BUILD SUCCESSFUL`，不要等进程退出信号。
+
 ## 动代码前必须知道的三件事
 
 1. **hook 点是精确反射 + 资源 ID，不是模糊扫描。** 类名逐版本漂移，但漂移是逐条的。
